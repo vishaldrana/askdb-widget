@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Cryptic Bank — a pretend customer website</title>
+  <title>Northwind Mortgage — a pretend customer website</title>
   <style>
     /* Deliberately hostile: the reset, the box-sizing and the button rule
        below are the three things that break naive widgets. If the widget
@@ -15,7 +15,7 @@
       line-height: 1.7;
     }
     header { padding: 20px 32px; border-bottom: 1px solid #e7e5e4; display: flex; gap: 16px; align-items: center; }
-    .logo { width: 30px; height: 30px; border-radius: 8px; background: #c2182b; }
+    .logo { width: 30px; height: 30px; border-radius: 8px; background: #0f766e; }
     main { max-width: 720px; margin: 0 auto; padding: 64px 32px 200px; }
     h1 { font-size: 40px; line-height: 1.15; margin: 0 0 16px; }
     p { font-size: 18px; color: #44403c; }
@@ -25,9 +25,9 @@
   </style>
 </head>
 <body>
-  <header><div class="logo"></div><strong>Cryptic Bank</strong></header>
+  <header><div class="logo"></div><strong>Northwind Mortgage</strong></header>
   <main>
-    <h1>Banking that answers back.</h1>
+    <h1>Mortgages that answer back.</h1>
     <p>This page is a stand-in for a customer's website. The assistant in the
        corner is the embedded widget, talking to a real database through a
        publishable key and an RBAC role.</p>
@@ -41,7 +41,7 @@
       <button onclick="askdb('open')">open()</button>
       <button onclick="askdb('close')">close()</button>
       <button onclick="askdb('toggle')">toggle()</button>
-      <button onclick="askdb('send', 'What is the average account balance?')">send(…)</button>
+      <button onclick="askdb('send', 'What is the average loan amount by product?')">send(…)</button>
       <button onclick="askdb('update', { appearance: { accent: '#0f766e', title: 'Restyled' } })">restyle</button>
       <button onclick="askdb('update', { appearance: { position: 'left' } })">move left</button>
       <button onclick="askdb('reset')">reset()</button>
@@ -58,7 +58,7 @@
     })(window, document);
 
     askdb('init', {
-      key: 'pk_xI691zQLcnqr2EQ7CRT7jxwNMiup1zHB',
+      key: 'pk_JzlSs1MhCt0JMy8akuiUgrL8pqX2_zqD',
       apiUrl: 'http://127.0.0.1:8000',
       onReady: function () { console.log('[demo] widget ready'); },
       onMessage: function (m) { console.log('[demo]', m.role + ':', m.text.slice(0, 60)); },
