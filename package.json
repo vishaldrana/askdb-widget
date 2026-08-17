@@ -1,0 +1,30 @@
+{
+  "name": "@askdb/widget",
+  "version": "0.1.0",
+  "description": "Embeddable chat assistant for askdb — ask a database questions from any website.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./askdb.js": "./dist/askdb.js"
+  },
+  "files": ["dist", "README.md"],
+  "sideEffects": ["./dist/askdb.js"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "size": "gzip -c dist/askdb.js | wc -c"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2"
+  }
+}

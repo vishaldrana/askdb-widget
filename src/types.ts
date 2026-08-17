@@ -1,0 +1,187 @@
+/**
+ * What a site owner can configure, and what the widget promises back.
+ *
+ * Two rules run through this file.
+ *
+ * **Everything is optional except the key.** A snippet that needs six fields
+ * filled in correctly before it renders anything is a snippet that gets pasted
+ * wrong, and the person pasting it is usually not the person who set the embed
+ * up. Every appearance option also has a server-side default, set on the embed
+ * itself, so the page can override nothing at all and still look right.
+ *
+ * **Anything visual can come from either side.** The server's appearance is
+ * the default and the snippet's `appearance` overrides it, because the two
+ * belong to different people: the embed's owner picks the greeting and the
+ * suggestions, and whoever owns the page picks where it sits so it does not
+ * cover their cookie banner.
+ */
+
+/** Which corner, on a desktop-sized screen. Mobile always takes the sheet. */
+export type Position = "left" | "right"
+
+export type Theme = "light" | "dark" | "system"
+
+/** The launcher's face. `chat` unless a brand has a better idea. */
+export type LauncherIcon = "chat" | "sparkle" | "question" | "search"
+
+export interface Appearance {
+  /** Header line. Defaults to the embed's name. */
+  title?: string
+  /** Second line, smaller. Good place for "usually replies instantly". */
+  subtitle?: string
+  /** First message, shown before anyone types. Markdown is allowed. */
+  greeting?: string
+  /** The brand colour: launcher fill, user bubble, focus ring. */
+  accent?: string
+  /** Text on the accent. Set it when the accent is pale. */
+  accentForeground?: string
+  position?: Position
+  /** Distance from the corner, in pixels. */
+  offset?: number
+  /** Corner rounding, in pixels. 0 gives a square widget. */
+  radius?: number
+  /** Text beside the launcher icon, e.g. "Ask us anything". */
+  launcherLabel?: string
+  launcherIcon?: LauncherIcon
+  /** Square image in the header. Any URL the page can load. */
+  avatarUrl?: string
+  placeholder?: string
+  /** Buttons shown under the greeting. Three or four; they are a menu. */
+  suggestions?: string[]
+  theme?: Theme
+  /** Small line under the composer, for a legal note. */
+  disclaimer?: string
+  showBranding?: boolean
+  /** Highest `z-index` on the page, plus one. Raise it if something covers it. */
+  zIndex?: number
+}
+
+export interface Identity {
+  /** Your id for this person. Sent with every message. */
+  id: string
+  name?: string
+  email?: string
+  /**
+   * `HMAC_SHA256(embed_secret, id)`, hex, computed **on your server**.
+   *
+   * Without it the widget can be told it is talking to any customer whose id
+   * somebody can guess. With it, the page can only claim identities your own
+   * backend has vouched for. The secret never goes in the page.
+   */
+  hash?: string
+}
+
+export interface Behaviour {
+  /** Open on load. Use sparingly; an assistant that opens itself is a popup. */
+  autoOpen?: boolean
+  /** Milliseconds before auto-opening. Ignored unless `autoOpen`. */
+  openDelay?: number
+  /**
+   * Remember open/closed across page loads in the same tab. On by default:
+   * navigating a site should not close the conversation you are having about
+   * it.
+   */
+  rememberState?: boolean
+  /** Take focus when opened. Off on mobile regardless, to avoid the keyboard. */
+  focusOnOpen?: boolean
+  /** Hide the launcher and drive it entirely from your own button. */
+  hideLauncher?: boolean
+}
+
+export interface WidgetConfig {
+  /** The publishable key from the embed's settings. Safe to put in the page. */
+  key: string
+  /**
+   * Where askdb lives. Only needed for self-hosted deployments; the default is
+   * the origin the script was served from, which is right almost always.
+   */
+  apiUrl?: string
+  appearance?: Appearance
+  behaviour?: Behaviour
+  /** American spelling, accepted because half the world will type it. */
+  behavior?: Behaviour
+  user?: Identity
+  /** Extra context sent with the first message, e.g. `{ plan: "pro" }`. */
+  metadata?: Record<string, string | number | boolean>
+
+  onReady?: () => void
+  onOpen?: () => void
+  onClose?: () => void
+  /** Fired for every completed message, yours and the assistant's. */
+  onMessage?: (message: { role: "user" | "assistant"; text: string }) => void
+  onError?: (error: Error) => void
+}
+
+/** What the server says the widget should look like, before page overrides. */
+export interface RemoteConfig {
+  name: string
+  appearance: Required<
+    Pick<
+      Appearance,
+      | "title"
+      | "subtitle"
+      | "greeting"
+      | "accent"
+      | "accentForeground"
+      | "position"
+      | "offset"
+      | "radius"
+      | "launcherLabel"
+      | "launcherIcon"
+      | "avatarUrl"
+      | "placeholder"
+      | "suggestions"
+      | "theme"
+      | "showBranding"
+      | "disclaimer"
+    >
+  >
+  limits: { messagesPerSession: number }
+  requiresSignedIdentity: boolean
+}
+
+/** The public surface. Everything is safe to call before `init` resolves. */
+export interface WidgetApi {
+  init(config: WidgetConfig): void
+  open(): void
+  close(): void
+  toggle(): void
+  /** Send a question as if the visitor typed it. Opens the widget first. */
+  send(text: string): void
+  /** Change appearance or identity without reloading the page. */
+  update(config: Partial<WidgetConfig>): void
+  /** Forget the conversation and start a new one. */
+  reset(): void
+  /** Remove every element and listener. Safe to call twice. */
+  destroy(): void
+  isOpen(): boolean
+  version: string
+}
+
+// --------------------------------------------------------------- the wire
+
+export type StreamEvent =
+  | { type: "token"; text: string }
+  | { type: "tool_start"; name: string; label: string }
+  | { type: "tool_end"; name: string; status: "ok" | "error"; duration_ms: number }
+  | { type: "chart"; config: unknown }
+  | {
+      type: "complete"
+      fullText: string
+      followups?: Array<{ question: string }>
+      citations?: Array<{ index?: number; intent?: string; row_count?: number }>
+    }
+  | { type: "error"; message: string }
+  | { type: "done" }
+
+export interface ChatMessage {
+  id: string
+  role: "user" | "assistant"
+  text: string
+  /** Still streaming. Drives the caret and disables the composer. */
+  pending?: boolean
+  failed?: boolean
+  /** What the assistant is doing right now, e.g. "Querying orders". */
+  activity?: string
+  followups?: string[]
+}

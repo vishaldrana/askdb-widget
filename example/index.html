@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cryptic Bank — a pretend customer website</title>
+  <style>
+    /* Deliberately hostile: the reset, the box-sizing and the button rule
+       below are the three things that break naive widgets. If the widget
+       still looks right on this page, the shadow root is doing its job. */
+    * { box-sizing: content-box; }
+    button { font: inherit; border: 3px dashed magenta !important; }
+    body {
+      margin: 0; font-family: Georgia, serif; color: #1c1917; background: #faf9f7;
+      line-height: 1.7;
+    }
+    header { padding: 20px 32px; border-bottom: 1px solid #e7e5e4; display: flex; gap: 16px; align-items: center; }
+    .logo { width: 30px; height: 30px; border-radius: 8px; background: #c2182b; }
+    main { max-width: 720px; margin: 0 auto; padding: 64px 32px 200px; }
+    h1 { font-size: 40px; line-height: 1.15; margin: 0 0 16px; }
+    p { font-size: 18px; color: #44403c; }
+    .controls { margin-top: 40px; padding: 20px; border: 1px solid #e7e5e4; border-radius: 12px; background: #fff; }
+    .controls h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: #78716c; margin: 0 0 12px; }
+    .controls button { border: 1px solid #d6d3d1 !important; background: #fff; border-radius: 8px; padding: 7px 12px; margin: 0 6px 6px 0; cursor: pointer; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <header><div class="logo"></div><strong>Cryptic Bank</strong></header>
+  <main>
+    <h1>Banking that answers back.</h1>
+    <p>This page is a stand-in for a customer's website. The assistant in the
+       corner is the embedded widget, talking to a real database through a
+       publishable key and an RBAC role.</p>
+    <p>The CSS on this page is deliberately hostile — a <code>content-box</code>
+       reset and a <code>button</code> rule with a magenta dashed border. Every
+       button here has it. None of the widget's do, which is the shadow root
+       earning its place.</p>
+
+    <div class="controls">
+      <h2>Driving it from the page</h2>
+      <button onclick="askdb('open')">open()</button>
+      <button onclick="askdb('close')">close()</button>
+      <button onclick="askdb('toggle')">toggle()</button>
+      <button onclick="askdb('send', 'What is the average account balance?')">send(…)</button>
+      <button onclick="askdb('update', { appearance: { accent: '#0f766e', title: 'Restyled' } })">restyle</button>
+      <button onclick="askdb('update', { appearance: { position: 'left' } })">move left</button>
+      <button onclick="askdb('reset')">reset()</button>
+      <button onclick="askdb('shutdown')">shutdown()</button>
+    </div>
+  </main>
+
+  <script>
+    (function (w, d) {
+      w.askdb = w.askdb || function () { (w.askdb.q = w.askdb.q || []).push(arguments) };
+      var s = d.createElement('script');
+      s.src = 'http://127.0.0.1:8000/embed.js?v=' + Date.now(); s.async = 1;
+      d.head.appendChild(s);
+    })(window, document);
+
+    askdb('init', {
+      key: 'pk_xI691zQLcnqr2EQ7CRT7jxwNMiup1zHB',
+      apiUrl: 'http://127.0.0.1:8000',
+      onReady: function () { console.log('[demo] widget ready'); },
+      onMessage: function (m) { console.log('[demo]', m.role + ':', m.text.slice(0, 60)); },
+      onError: function (e) { console.warn('[demo] error', e.message); }
+    });
+  </script>
+</body>
+</html>

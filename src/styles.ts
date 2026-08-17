@@ -1,0 +1,374 @@
+import type { Appearance } from "./types"
+
+/**
+ * The widget's stylesheet, built from the resolved appearance.
+ *
+ * It lives inside a shadow root, so none of it escapes and nothing on the host
+ * page reaches in — which is the entire reason for the shadow root. Sites have
+ * `* { box-sizing: content-box }`, `img { width: 100% }` and a `button` reset
+ * that removes the cursor, and a widget that inherits any of those looks
+ * broken in a way its author can never reproduce.
+ *
+ * Everything is a custom property so `update()` can restyle a live widget by
+ * setting variables rather than regenerating and re-parsing the sheet.
+ */
+export function stylesheet(look: Required<Appearance>): string {
+  return `
+:host {
+  --accent: ${look.accent};
+  --accent-fg: ${look.accentForeground};
+  --radius: ${look.radius}px;
+  --offset: ${look.offset}px;
+  --z: ${look.zIndex};
+
+  --bg: #ffffff;
+  --fg: #111827;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --surface: #f9fafb;
+  --shadow: 0 12px 40px -8px rgb(0 0 0 / 0.18), 0 4px 12px -4px rgb(0 0 0 / 0.1);
+
+  all: initial;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Dark is opt-in or system, never guessed from the host page — reading its
+   background is unreliable and gets it wrong on exactly the sites that care. */
+:host([data-theme="dark"]) {
+  --bg: #0b0f17;
+  --fg: #f3f4f6;
+  --muted: #9ca3af;
+  --line: #1f2937;
+  --surface: #111827;
+  --shadow: 0 12px 40px -8px rgb(0 0 0 / 0.6);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  margin: 0;
+}
+
+.root {
+  position: fixed;
+  ${"" /* Both corners are set and one is cleared, so `update()` can move it. */}
+  bottom: var(--offset);
+  ${look.position === "left" ? "left" : "right"}: var(--offset);
+  z-index: var(--z);
+  display: flex;
+  flex-direction: column;
+  align-items: ${look.position === "left" ? "flex-start" : "flex-end"};
+  gap: 12px;
+}
+
+/* ------------------------------------------------------------- launcher */
+
+.launcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 52px;
+  min-width: 52px;
+  padding: 0 ${look.launcherLabel ? "18px" : "0"};
+  ${look.launcherLabel ? "" : "justify-content: center;"}
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  box-shadow: var(--shadow);
+  font-weight: 500;
+  transition: transform .18s cubic-bezier(.2,.8,.2,1), box-shadow .18s;
+}
+.launcher:hover { transform: scale(1.04); }
+.launcher:active { transform: scale(.97); }
+.launcher:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.launcher svg { width: 24px; height: 24px; display: block; }
+
+.badge {
+  position: absolute;
+  top: -2px;
+  ${look.position === "left" ? "left" : "right"}: -2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  display: grid;
+  place-items: center;
+}
+
+/* ---------------------------------------------------------------- panel */
+
+.panel {
+  width: 400px;
+  height: min(680px, calc(100vh - var(--offset) * 2 - 76px));
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  border: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transform-origin: bottom ${look.position === "left" ? "left" : "right"};
+  animation: pop .22s cubic-bezier(.2,.8,.2,1);
+}
+
+@keyframes pop {
+  from { opacity: 0; transform: translateY(12px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* A visitor who has asked for less motion gets none, rather than a faster
+   version of the same thing. */
+@media (prefers-reduced-motion: reduce) {
+  .panel { animation: none; }
+  .launcher { transition: none; }
+  .launcher:hover, .launcher:active { transform: none; }
+}
+
+/* Below this the panel is the page. A 400px card floating over a 390px phone
+   is the single most common way an embedded widget is unusable. */
+@media (max-width: 480px) {
+  .root { inset: 0; bottom: var(--offset); }
+  .panel {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+    border: 0;
+    animation: slide .24s cubic-bezier(.2,.8,.2,1);
+  }
+  @keyframes slide {
+    from { opacity: 0; transform: translateY(24px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  /* The launcher has nothing to launch once the panel is the whole screen,
+     and it floats over the conversation if left alone. The panel precedes it
+     in the DOM precisely so this sibling selector can reach it. */
+  .panel:not(.hidden) ~ .launcher { display: none; }
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 14px 14px 16px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  flex-shrink: 0;
+}
+.avatar {
+  width: 32px; height: 32px;
+  border-radius: 999px;
+  object-fit: cover;
+  background: rgb(255 255 255 / .2);
+  flex-shrink: 0;
+}
+.titles { min-width: 0; flex: 1; }
+.title { font-weight: 600; font-size: 15px; line-height: 1.25; }
+.subtitle { font-size: 12px; opacity: .8; line-height: 1.3; }
+.close {
+  width: 30px; height: 30px;
+  border-radius: 8px;
+  display: grid; place-items: center;
+  opacity: .85;
+}
+.close:hover { background: rgb(255 255 255 / .16); opacity: 1; }
+.close:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 1px; }
+.close svg { width: 18px; height: 18px; }
+
+.log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scrollbar-width: thin;
+}
+.log::-webkit-scrollbar { width: 8px; }
+.log::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+
+.msg { display: flex; }
+.msg.user { justify-content: flex-end; }
+.bubble {
+  max-width: 86%;
+  padding: 9px 13px;
+  border-radius: 14px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.msg.user .bubble {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-bottom-right-radius: 4px;
+}
+.msg.assistant .bubble {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-bottom-left-radius: 4px;
+}
+.msg.failed .bubble { border-color: #ef4444; color: #b91c1c; }
+
+.bubble p { margin: 0 0 8px; }
+.bubble p:last-child { margin-bottom: 0; }
+.bubble ul, .bubble ol { margin: 0 0 8px; padding-left: 20px; }
+.bubble li { margin: 2px 0; }
+.bubble code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .92em;
+  background: rgb(0 0 0 / .06);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+:host([data-theme="dark"]) .bubble code { background: rgb(255 255 255 / .1); }
+.bubble pre {
+  margin: 0 0 8px;
+  padding: 10px;
+  border-radius: 8px;
+  background: rgb(0 0 0 / .06);
+  overflow-x: auto;
+}
+.bubble pre code { background: none; padding: 0; }
+.bubble a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.bubble table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0 0 8px;
+  font-size: 13px;
+  display: block;
+  overflow-x: auto;
+}
+.bubble th, .bubble td {
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+.bubble th { background: rgb(0 0 0 / .04); font-weight: 600; }
+
+/* The caret marks the live end of a streaming answer, so a pause reads as
+   thinking rather than as finished. */
+.caret {
+  display: inline-block;
+  width: 2px; height: 1em;
+  background: currentColor;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .caret { animation: none; } }
+
+.activity {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 2px 2px 0;
+}
+.dots { display: inline-flex; gap: 3px; }
+.dots i {
+  width: 5px; height: 5px; border-radius: 999px;
+  background: currentColor;
+  animation: bounce 1.2s infinite ease-in-out;
+}
+.dots i:nth-child(2) { animation-delay: .15s; }
+.dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes bounce { 0%, 60%, 100% { opacity: .3 } 30% { opacity: 1 } }
+@media (prefers-reduced-motion: reduce) { .dots i { animation: none; opacity: .6 } }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
+.chip {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  text-align: left;
+  transition: background .15s, border-color .15s;
+}
+.chip:hover { background: var(--surface); border-color: var(--muted); }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.composer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--line);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg);
+}
+.field { display: flex; align-items: flex-end; gap: 8px; }
+textarea {
+  flex: 1;
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 9px 12px;
+  resize: none;
+  max-height: 120px;
+  min-height: 40px;
+  outline: none;
+  overflow-y: auto;
+}
+textarea::placeholder { color: var(--muted); }
+textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+textarea:disabled { opacity: .6; cursor: not-allowed; }
+
+.send {
+  width: 40px; height: 40px;
+  border-radius: 12px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  display: grid; place-items: center;
+  flex-shrink: 0;
+  transition: opacity .15s;
+}
+.send:disabled { opacity: .35; cursor: not-allowed; }
+.send:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.send svg { width: 18px; height: 18px; }
+
+.foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.foot a { color: inherit; text-decoration: none; }
+.foot a:hover { text-decoration: underline; }
+
+.hidden { display: none !important; }
+
+.sr {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+`
+}
