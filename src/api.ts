@@ -72,9 +72,32 @@ export class Transport {
     return `${this.baseUrl}/v1/embed${path}${separator}key=${encodeURIComponent(this.key)}`
   }
 
+  /**
+   * The first call the widget makes, and the one most likely to be somebody's
+   * first five minutes with this.
+   *
+   * A network failure *here* is almost never the network. It is a wrong key, a
+   * site that is not on the allowlist, or an `apiUrl` pointing at nothing —
+   * and "check your connection" sends a developer whose connection is fine to
+   * look in the wrong place. Later calls keep the generic wording, because by
+   * then the config has already loaded and the network genuinely is the likely
+   * cause.
+   */
   async config(signal?: AbortSignal): Promise<RemoteConfig> {
-    const response = await this.request("/config", { method: "GET", signal })
-    return (await response.json()) as RemoteConfig
+    try {
+      const response = await this.request("/config", { method: "GET", signal })
+      return (await response.json()) as RemoteConfig
+    } catch (error) {
+      if (error instanceof WidgetError && error.kind === "network") {
+        throw new WidgetError(
+          `Could not load the assistant from ${this.baseUrl}. Check that the key ` +
+            "is right, that this site is on the embed's allowed origins, and " +
+            "that apiUrl points at your askdb host.",
+          "config",
+        )
+      }
+      throw error
+    }
   }
 
   /**
