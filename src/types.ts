@@ -57,18 +57,19 @@ export interface Appearance {
 }
 
 export interface Identity {
-  /** Your id for this person. Sent with every message. */
+  /** Your id for this person. Required — see `hash`. */
   id: string
   name?: string
   email?: string
   /**
    * `HMAC_SHA256(embed_secret, id)`, hex, computed **on your server**.
    *
-   * Without it the widget can be told it is talking to any customer whose id
-   * somebody can guess. With it, the page can only claim identities your own
-   * backend has vouched for. The secret never goes in the page.
+   * Required, not optional. Without it the widget could be told it is talking
+   * to any customer whose id somebody can guess; with it, the page can only
+   * claim identities your own backend has vouched for. The secret never goes
+   * in the page.
    */
-  hash?: string
+  hash: string
 }
 
 export interface Behaviour {
@@ -86,11 +87,19 @@ export interface Behaviour {
   focusOnOpen?: boolean
   /** Hide the launcher and drive it entirely from your own button. */
   hideLauncher?: boolean
+  /** Start maximized. Only meaningful where the embed allows maximizing. */
+  startMaximized?: boolean
 }
 
 export interface WidgetConfig {
   /** The publishable key from the embed's settings. Safe to put in the page. */
   key: string
+  /**
+   * `bubble` is the launcher in the corner. `page` fills the window and is
+   * what the "open in a new tab" button opens — same code, same endpoints, so
+   * the two cannot drift.
+   */
+  mode?: "bubble" | "page"
   /**
    * Where askdb lives. Only needed for self-hosted deployments; the default is
    * the origin the script was served from, which is right almost always.
@@ -100,6 +109,11 @@ export interface WidgetConfig {
   behaviour?: Behaviour
   /** American spelling, accepted because half the world will type it. */
   behavior?: Behaviour
+  /**
+   * Who is asking. **Required** — an embedded assistant only answers
+   * signed-in users, because every question it can answer is a question about
+   * somebody's own data.
+   */
   user?: Identity
   /** Extra context sent with the first message, e.g. `{ plan: "pro" }`. */
   metadata?: Record<string, string | number | boolean>
@@ -110,6 +124,26 @@ export interface WidgetConfig {
   /** Fired for every completed message, yours and the assistant's. */
   onMessage?: (message: { role: "user" | "assistant"; text: string }) => void
   onError?: (error: Error) => void
+}
+
+/** What an embed will let the widget do. Enforced server-side regardless. */
+export interface Capabilities {
+  /** Keep and revisit past conversations. */
+  threads: boolean
+  charts: boolean
+  citations: boolean
+  /** Offer the 80% dialog. */
+  maximize: boolean
+  /** Offer "open in a new tab". */
+  fullscreen: boolean
+}
+
+/** One past conversation. */
+export interface ThreadSummary {
+  id: string
+  title: string
+  updated_at: string
+  current?: boolean
 }
 
 /** What the server says the widget should look like, before page overrides. */
@@ -137,6 +171,7 @@ export interface RemoteConfig {
     >
   >
   limits: { messagesPerSession: number }
+  capabilities: Capabilities
   requiresSignedIdentity: boolean
 }
 
@@ -155,10 +190,20 @@ export interface WidgetApi {
   /** Remove every element and listener. Safe to call twice. */
   destroy(): void
   isOpen(): boolean
+  /** Grow to the 80% dialog, or shrink back. */
+  maximize(on?: boolean): void
   version: string
 }
 
 // --------------------------------------------------------------- the wire
+
+/** What an answer was based on, as much of it as a visitor is told. */
+export interface Citation {
+  index?: number
+  intent?: string
+  row_count?: number
+  trust?: string
+}
 
 export type StreamEvent =
   | { type: "token"; text: string }
@@ -168,8 +213,9 @@ export type StreamEvent =
   | {
       type: "complete"
       fullText: string
+      charts?: unknown[]
       followups?: Array<{ question: string }>
-      citations?: Array<{ index?: number; intent?: string; row_count?: number }>
+      citations?: Citation[]
     }
   | { type: "error"; message: string }
   | { type: "done" }
@@ -178,6 +224,8 @@ export interface ChatMessage {
   id: string
   role: "user" | "assistant"
   text: string
+  charts?: unknown[]
+  citations?: Citation[]
   /** Still streaming. Drives the caret and disables the composer. */
   pending?: boolean
   failed?: boolean

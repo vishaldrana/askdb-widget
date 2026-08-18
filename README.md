@@ -13,12 +13,18 @@ with the same guardrails the first-party product has.
     d.head.appendChild(s);
   })(window, document);
 
-  askdb('init', { key: 'pk_live_…' });
+  askdb('init', {
+    key: 'pk_live_…',
+    user: { id: 'cus_4172', hash: '<HMAC of that id, from your server>' },
+  });
 </script>
 ```
 
 That is the whole installation. Everything else has a default, set on the embed
 in askdb, and the page can override any of it.
+
+**`user` is required.** An embedded assistant only answers signed-in people —
+see [Identifying your visitors](#identifying-your-visitors).
 
 ---
 
@@ -41,7 +47,7 @@ order:
 | **Role** | What the assistant can read at all. The one that matters. |
 | **Origins** | Which sites may use the key. Checked server-side against `Origin`, on every request including the ones that carry a session token. |
 | **Limits** | Messages per conversation and new conversations per hour, per embed. |
-| **Identity** | Optional. See below. |
+| **Identity** | Required. The page must say who is asking and prove it. |
 
 Turning the embed off in askdb stops it everywhere immediately, without anyone
 touching the customer's page.
@@ -106,6 +112,7 @@ askdb('close')                  // also 'hide'
 askdb('toggle')
 askdb('send', 'How many accounts are open?')
 askdb('update', { appearance: { accent: '#0f766e' } })
+askdb('maximize')               // the 80% dialog; `maximize(false)` restores
 askdb('reset')                  // forget the conversation, start a new one
 askdb('shutdown')               // remove every element and listener
 ```
@@ -118,7 +125,8 @@ person's answers.
 
 ## Identifying your visitors
 
-If the page knows who is asking, tell the widget — and prove it:
+Every question this can answer is a question about somebody's own data, so the
+page must say who is asking and prove it. There is no anonymous mode.
 
 ```js
 askdb('init', {
@@ -147,9 +155,14 @@ const hash = require('crypto')
 hash = hmac.new(secret.encode(), user_id.encode(), hashlib.sha256).hexdigest()
 ```
 
-Without the hash, the page can claim to be any customer whose id somebody can
-guess. Embeds reject unsigned ids unless you explicitly allow them, which is
-only reasonable when the answer does not depend on who is asking.
+Without the hash, the page could claim to be any customer whose id somebody can
+guess. The API refuses a session without one, and the setting that would relax
+this is deliberately not editable — it can be a real choice one day, but
+shipping the permissive half first is how it becomes an incident.
+
+The signed id is also what conversation history follows, which is why history
+is safe to offer: it belongs to the person rather than the browser, so it
+survives a new device and is never handed to somebody else on a shared one.
 
 ---
 
@@ -169,6 +182,45 @@ The API is identical. Use it when you would rather have the widget in a
 component tree than a script tag — a Next.js layout, say.
 
 ---
+
+## Sizes, and where a conversation lives
+
+Three sizes, and the middle one earns its place: a table of twenty rows with a
+chart beside it needs more room than a corner panel has and less than a whole
+tab.
+
+| | |
+|---|---|
+| **Panel** | The corner. Where you start. |
+| **Maximized** | A centred dialog at 80% of the window. The ⤢ button, or `askdb('maximize')`. |
+| **Page** | The same conversation in a tab of its own. The ↗ button. |
+
+Page mode is the same script and the same endpoints — the widget renders
+without a launcher instead of beside one — so there is one implementation of
+the conversation rather than a second that drifts.
+
+Where an embed allows it, past conversations are listed behind the ☰ button:
+they follow the signed user id, are titled by their first question, and replay
+with their charts and citations intact. Below a certain width the list overlays
+the conversation rather than sitting beside it, because 190px of a 400px panel
+is not a sidebar, it is a squeeze.
+
+Each of these is a capability on the embed, and the server enforces every one:
+hiding a button is a courtesy, refusing the request is the control.
+
+## What answers look like
+
+**Charts.** Bar, line, area, pie and scatter, drawn in SVG by the widget — no
+charting library, because the smallest credible one is ten times the size of
+this entire package and it would be sitting on somebody else's critical path to
+draw four bars.
+
+**Citations.** What each answer was based on: the query's intent and how many
+rows it read, collapsed behind "Based on 1 query". Not the SQL, not the spec,
+not the table names — those describe the shape of your database to somebody who
+only asked a question about it, and the server does not send them.
+
+Both can be switched off per embed.
 
 ## What it does about the awkward parts
 
@@ -207,7 +259,7 @@ answer can become markup, and links are restricted to `http(s)`.
 
 ## Size
 
-~9.5 KB gzipped, one request, no dependencies.
+~14 KB gzipped, one request, no dependencies — charts, Markdown and all.
 
 ## Development
 

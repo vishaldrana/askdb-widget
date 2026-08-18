@@ -43,6 +43,7 @@ const COMMANDS: Record<string, (...args: never[]) => unknown> = {
   reset: AskDB.reset,
   shutdown: AskDB.destroy,
   destroy: AskDB.destroy,
+  maximize: AskDB.maximize,
 }
 
 function dispatch(command: string, ...args: unknown[]): unknown {

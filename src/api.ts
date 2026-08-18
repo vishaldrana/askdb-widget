@@ -1,4 +1,4 @@
-import type { Identity, RemoteConfig, StreamEvent } from "./types"
+import type { Citation, Identity, RemoteConfig, StreamEvent, ThreadSummary } from "./types"
 
 /**
  * Talking to askdb from somebody else's page.
@@ -22,17 +22,40 @@ export class WidgetError extends Error {
   }
 }
 
-/** Where the session token lives for the length of a visit. */
-const TOKEN_KEY = "askdb.session"
+/** One stored message, as a replayed conversation returns it. */
+export interface StoredMessage {
+  id: string
+  role: "user" | "assistant"
+  text: string
+  charts?: unknown[]
+  citations?: Citation[]
+  followups?: string[]
+}
+
+/**
+ * Where the session token lives, per key.
+ *
+ * Namespaced by the publishable key, and that is not decoration. It was one
+ * shared name, so two embeds on the same origin — or one page swapped from a
+ * staging key to a production one — reused each other's token. The symptom is
+ * the worst kind: everything works, and the assistant confidently answers from
+ * the wrong database.
+ */
+function tokenKey(publicKey: string): string {
+  return `askdb.session.${publicKey}`
+}
 
 export class Transport {
   private token: string | null = null
+
+  private readonly storageKey: string
 
   constructor(
     private readonly baseUrl: string,
     private readonly key: string,
   ) {
-    this.token = read(TOKEN_KEY)
+    this.storageKey = tokenKey(key)
+    this.token = read(this.storageKey)
   }
 
   /**
@@ -64,18 +87,27 @@ export class Transport {
    * number of round trips in the common case.
    */
   async session(user?: Identity, signal?: AbortSignal): Promise<RemoteConfig> {
+    if (!user?.id || !user?.hash) {
+      // Caught here rather than at the server so the message names the fix and
+      // arrives before any request goes out.
+      throw new WidgetError(
+        "This assistant only answers signed-in users. Pass `user: { id, hash }` " +
+          "to init, with the hash computed on your server.",
+        "config",
+      )
+    }
     const response = await this.request("/session", {
       method: "POST",
       signal,
       body: JSON.stringify({
         key: this.key,
-        user_id: user?.id ?? null,
-        user_hash: user?.hash ?? null,
+        user_id: user.id,
+        user_hash: user.hash,
       }),
     })
     const data = (await response.json()) as { token: string; config: RemoteConfig }
     this.token = data.token
-    write(TOKEN_KEY, data.token)
+    write(this.storageKey, data.token)
     return data.config
   }
 
@@ -85,7 +117,33 @@ export class Transport {
 
   forget(): void {
     this.token = null
-    remove(TOKEN_KEY)
+    remove(this.storageKey)
+  }
+
+  /** This visitor's past conversations. Empty when the embed keeps none. */
+  async threads(signal?: AbortSignal): Promise<ThreadSummary[]> {
+    const response = await this.request("/threads", { method: "GET", signal, auth: true })
+    return (await response.json()) as ThreadSummary[]
+  }
+
+  async newThread(signal?: AbortSignal): Promise<ThreadSummary> {
+    const response = await this.request("/threads", {
+      method: "POST",
+      signal,
+      auth: true,
+      body: JSON.stringify({}),
+    })
+    return (await response.json()) as ThreadSummary
+  }
+
+  /** Replay one, and make it the session's current conversation. */
+  async history(threadId: string, signal?: AbortSignal): Promise<StoredMessage[]> {
+    const response = await this.request(`/threads/${encodeURIComponent(threadId)}/messages`, {
+      method: "GET",
+      signal,
+      auth: true,
+    })
+    return (await response.json()) as StoredMessage[]
   }
 
   /**
@@ -95,12 +153,16 @@ export class Transport {
    * the caller renders each token, and a callback would happily out-run the
    * DOM on a long answer over a fast connection.
    */
-  async *ask(text: string, signal: AbortSignal): AsyncGenerator<StreamEvent> {
+  async *ask(
+    text: string,
+    signal: AbortSignal,
+    threadId?: string | null,
+  ): AsyncGenerator<StreamEvent> {
     const response = await this.request("/message", {
       method: "POST",
       signal,
-      headers: { Authorization: `Bearer ${this.token ?? ""}` },
-      body: JSON.stringify({ text }),
+      auth: true,
+      body: JSON.stringify(threadId ? { text, thread_id: threadId } : { text }),
     })
 
     const body = response.body
@@ -138,13 +200,18 @@ export class Transport {
     }
   }
 
-  private async request(path: string, init: RequestInit): Promise<Response> {
+  private async request(
+    path: string,
+    init: RequestInit & { auth?: boolean },
+  ): Promise<Response> {
+    const { auth, ...rest } = init
     let response: Response
     try {
       response = await fetch(this.url(path), {
-        ...init,
+        ...rest,
         headers: {
           "Content-Type": "application/json",
+          ...(auth ? { Authorization: `Bearer ${this.token ?? ""}` } : {}),
           ...(init.headers ?? {}),
         },
         // Never cookies. The widget carries a bearer token it was handed, and

@@ -72,6 +72,10 @@ export function isOpen(): boolean {
   return current?.isOpen() ?? false
 }
 
+export function maximize(on?: boolean): void {
+  current?.maximize(on)
+}
+
 /** The same surface as the global, for anyone importing the package. */
 export const AskDB: WidgetApi = {
   init,
@@ -83,6 +87,7 @@ export const AskDB: WidgetApi = {
   reset,
   destroy,
   isOpen,
+  maximize,
   version: VERSION,
 }
 

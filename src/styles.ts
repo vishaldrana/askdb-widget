@@ -11,6 +11,10 @@ import type { Appearance } from "./types"
  *
  * Everything is a custom property so `update()` can restyle a live widget by
  * setting variables rather than regenerating and re-parsing the sheet.
+ *
+ * One rule for anyone editing below: **no backticks inside the returned
+ * template literal**, comments included. A backtick ends the literal, and the
+ * error you get points at whatever happens to parse badly forty lines later.
  */
 export function stylesheet(look: Required<Appearance>): string {
   return `
@@ -164,6 +168,46 @@ button {
   .panel:not(.hidden) ~ .launcher { display: none; }
 }
 
+/* ------------------------------------------------------------ sizes */
+
+/* The middle size. A table of twenty rows and a chart beside it need room the
+   corner panel does not have and do not need a page of their own. Centred
+   rather than grown from the corner, because at this size it is a dialog and
+   dialogs live in the middle. */
+.root.maximized .panel {
+  position: fixed;
+  width: 80vw;
+  height: 80vh;
+  max-width: 1100px;
+  max-height: 900px;
+  top: 50%;
+  left: 50%;
+  right: auto;
+  bottom: auto;
+  transform: translate(-50%, -50%);
+  animation: none;
+}
+.root.maximized { align-items: flex-end; }
+
+/* Page mode: the widget is the document. No launcher, no rounding, no shadow —
+   nothing to sit "on top of". */
+:host([data-mode="page"]) .root {
+  position: fixed;
+  inset: 0;
+  align-items: stretch;
+  gap: 0;
+}
+:host([data-mode="page"]) .panel {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+}
+:host([data-mode="page"]) .launcher { display: none; }
+
 .header {
   display: flex;
   align-items: center;
@@ -183,15 +227,116 @@ button {
 .titles { min-width: 0; flex: 1; }
 .title { font-weight: 600; font-size: 15px; line-height: 1.25; }
 .subtitle { font-size: 12px; opacity: .8; line-height: 1.3; }
-.close {
+.actions { display: flex; align-items: center; gap: 2px; }
+
+.icon {
   width: 30px; height: 30px;
   border-radius: 8px;
   display: grid; place-items: center;
   opacity: .85;
+  flex-shrink: 0;
 }
-.close:hover { background: rgb(255 255 255 / .16); opacity: 1; }
-.close:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 1px; }
-.close svg { width: 18px; height: 18px; }
+.icon:hover { background: rgb(255 255 255 / .16); opacity: 1; }
+.icon:focus-visible { outline: 2px solid var(--accent-fg); outline-offset: 1px; }
+.icon svg { width: 17px; height: 17px; }
+
+/* --------------------------------------------------------- conversations */
+
+.body { display: flex; min-height: 0; flex: 1; position: relative; }
+
+/* The drawer overlays by default and only sits beside the conversation when
+   there is room for both.
+   Keyed on the widget's own size rather than the viewport: the panel is 400px
+   wide on a 1512px screen, so a "max-width" media query says "desktop" and
+   hands 190px of a 400px panel to a list of links. Room is a property of the
+   panel, and the two states that have it are maximized and page mode. */
+.drawer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  width: 100%;
+  flex-shrink: 0;
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+
+.root.maximized .drawer,
+:host([data-mode="page"]) .drawer {
+  position: static;
+  width: 210px;
+}
+.newthread {
+  display: flex; align-items: center; gap: 6px;
+  margin: 8px; padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.newthread:hover { border-color: var(--accent); }
+.newthread svg { width: 14px; height: 14px; }
+.threads { overflow-y: auto; padding: 0 8px 8px; display: flex; flex-direction: column; gap: 2px; }
+.thread {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 12.5px;
+}
+.thread:hover { background: var(--bg); }
+.thread.active { background: var(--bg); box-shadow: inset 2px 0 0 var(--accent); }
+.thread .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread .w { font-size: 11px; color: var(--muted); }
+.empty { color: var(--muted); font-size: 12px; padding: 4px 8px; }
+
+/* A phone is never wide enough for both, whatever mode it is in. */
+@media (max-width: 640px) {
+  .root.maximized .drawer,
+  :host([data-mode="page"]) .drawer {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+  }
+}
+
+/* ------------------------------------------------------- charts + cites */
+
+.chart { margin: 10px 0 4px; }
+.chart figcaption {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .tick { fill: var(--muted); font-size: 9px; }
+.legend {
+  display: flex; flex-wrap: wrap; gap: 4px 10px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.legend span { display: inline-flex; align-items: center; gap: 4px; }
+.legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+
+.cites { margin-top: 8px; font-size: 12px; }
+.cites summary {
+  cursor: pointer;
+  color: var(--muted);
+  list-style: none;
+}
+.cites summary::-webkit-details-marker { display: none; }
+.cites summary::before { content: "▸ "; }
+.cites[open] summary::before { content: "▾ "; }
+.cites summary:hover { color: var(--fg); }
+.cites ul { margin: 6px 0 0; padding-left: 16px; color: var(--muted); }
+.cites li { margin: 2px 0; }
+.cites .rows { opacity: .75; }
 
 .log {
   flex: 1;

@@ -1,10 +1,21 @@
 import { Transport, WidgetError } from "./api"
-import { CLOSE, LAUNCHER_ICONS, SEND } from "./icons"
+import { renderChart, type ChartConfig } from "./chart"
+import {
+  CLOSE,
+  EXTERNAL,
+  LAUNCHER_ICONS,
+  MAXIMIZE,
+  MENU,
+  MINIMIZE,
+  PLUS,
+  SEND,
+} from "./icons"
 import { escapeHtml, render } from "./markdown"
 import { stylesheet } from "./styles"
 import type {
   Appearance,
   Behaviour,
+  Capabilities,
   ChatMessage,
   RemoteConfig,
   WidgetConfig,
@@ -25,7 +36,10 @@ import type {
  * answer is arriving.
  */
 
-const OPEN_KEY = "askdb.open"
+// Per key, for the same reason the session token is: two embeds on one origin
+// must not share their remembered state.
+const openKey = (key: string) => `askdb.open.${key}`
+const maxKey = (key: string) => `askdb.max.${key}`
 
 const DEFAULTS: Required<Appearance> = {
   title: "Assistant",
@@ -53,6 +67,17 @@ const DEFAULT_BEHAVIOUR: Required<Behaviour> = {
   rememberState: true,
   focusOnOpen: true,
   hideLauncher: false,
+  startMaximized: false,
+}
+
+/** Everything off until the server says otherwise — a capability the widget
+ *  invents is a button whose endpoint refuses it. */
+const NO_CAPABILITIES: Capabilities = {
+  threads: false,
+  charts: false,
+  citations: false,
+  maximize: false,
+  fullscreen: false,
 }
 
 export class Widget {
@@ -69,6 +94,10 @@ export class Widget {
   private abort: AbortController | null = null
   private destroyed = false
   private themeQuery: MediaQueryList | null = null
+  private capabilities: Capabilities = NO_CAPABILITIES
+  private maximized = false
+  private threadId: string | null = null
+  private drawerOpen = false
   /** Suppresses auto-scroll while the visitor is reading further up. */
   private pinned = true
   /** How many questions this session may ask, from the server. */
@@ -77,6 +106,7 @@ export class Widget {
 
   private el!: {
     style: HTMLStyleElement
+    root: HTMLDivElement
     launcher: HTMLButtonElement
     panel: HTMLDivElement
     log: HTMLDivElement
@@ -87,14 +117,23 @@ export class Widget {
     avatar: HTMLImageElement
     live: HTMLDivElement
     foot: HTMLDivElement
+    actions: HTMLDivElement
+    drawer: HTMLDivElement
+    threads: HTMLDivElement
   }
+
+  private readonly mode: "bubble" | "page"
+  private readonly baseUrl: string
 
   constructor(config: WidgetConfig) {
     this.config = config
-    this.transport = new Transport(baseUrl(config.apiUrl), config.key)
+    this.mode = config.mode === "page" ? "page" : "bubble"
+    this.baseUrl = baseUrl(config.apiUrl)
+    this.transport = new Transport(this.baseUrl, config.key)
 
     this.host = document.createElement("div")
     this.host.setAttribute("data-askdb-widget", "")
+    this.host.setAttribute("data-mode", this.mode)
     // Deliberately not `all: initial` here. An inline declaration outranks the
     // `:host` rule, so `all: initial` on the element resets font-family to the
     // browser default *and wins*, and the widget renders in Times on a page
@@ -118,7 +157,10 @@ export class Widget {
       this.applyRemote(remote)
       this.config.onReady?.()
 
-      if (this.behaviour.rememberState && read(OPEN_KEY) === "1") this.show()
+      // Page mode *is* the widget: there is no launcher to press and nothing
+      // else on the page to go back to.
+      if (this.mode === "page") this.show()
+      else if (this.behaviour.rememberState && read(openKey(this.config.key)) === "1") this.show()
       else if (this.behaviour.autoOpen) {
         window.setTimeout(() => this.show(), this.behaviour.openDelay)
       }
@@ -157,7 +199,7 @@ export class Widget {
     this.open = true
     this.el.panel.classList.remove("hidden")
     this.el.launcher.setAttribute("aria-expanded", "true")
-    write(OPEN_KEY, "1")
+    write(openKey(this.config.key), "1")
     this.config.onOpen?.()
 
     // Only now. A visitor who never opens the widget never gets a session,
@@ -175,11 +217,11 @@ export class Widget {
   }
 
   hide(): void {
-    if (this.destroyed || !this.open) return
+    if (this.destroyed || !this.open || this.mode === "page") return
     this.open = false
     this.el.panel.classList.add("hidden")
     this.el.launcher.setAttribute("aria-expanded", "false")
-    write(OPEN_KEY, "0")
+    write(openKey(this.config.key), "0")
     this.config.onClose?.()
     // Answering into a closed widget wastes the visitor's data and our tokens.
     this.abort?.abort()
@@ -223,6 +265,144 @@ export class Widget {
     if (patch.user && patch.user.id !== this.config.user?.id) this.reset()
   }
 
+
+  // ------------------------------------------------------------ size
+
+  /**
+   * The 80% dialog.
+   *
+   * Between the corner panel and a whole tab there is a real gap: a table of
+   * twenty rows and a chart beside it need room the panel does not have, and
+   * do not need a page of their own. This is that middle, and it is a mode
+   * rather than a resize handle because the two useful sizes are "out of the
+   * way" and "I am reading this now" — nobody wants to negotiate pixels.
+   */
+  maximize(on = !this.maximized): void {
+    if (!this.capabilities.maximize || this.mode === "page") return
+    this.maximized = on
+    this.el.root.classList.toggle("maximized", on)
+    write(maxKey(this.config.key), on ? "1" : "0")
+    this.renderActions()
+    this.scrollToEnd(true)
+  }
+
+  /**
+   * The same conversation, in a tab of its own.
+   *
+   * The identity travels in the URL because the new tab has no way to ask the
+   * opener for it. That is the same pair of values already sitting in the
+   * page's own snippet, so nothing is exposed that was not, but it does mean
+   * the URL is personal and should not be pasted into a chat — hence
+   * `noopener`, and hence the page telling the visitor so.
+   */
+  private openFullscreen(): void {
+    const user = this.config.user
+    const url = new URL(`${this.baseUrl}/embed/chat`)
+    url.searchParams.set("key", this.config.key)
+    if (user?.id && user.hash) {
+      url.searchParams.set("uid", user.id)
+      url.searchParams.set("uh", user.hash)
+    }
+    window.open(url.toString(), "_blank", "noopener,noreferrer")
+  }
+
+  // --------------------------------------------------------- conversations
+
+  private toggleDrawer(open = !this.drawerOpen): void {
+    if (!this.capabilities.threads) return
+    this.drawerOpen = open
+    this.el.drawer.classList.toggle("hidden", !open)
+    this.el.root.querySelector(".menu")?.setAttribute("aria-expanded", String(open))
+    if (open) void this.loadThreads()
+  }
+
+  private async loadThreads(): Promise<void> {
+    try {
+      const threads = await this.transport.threads()
+      this.el.threads.replaceChildren()
+      if (!threads.length) {
+        const empty = document.createElement("p")
+        empty.className = "empty"
+        empty.textContent = "No past conversations yet."
+        this.el.threads.appendChild(empty)
+        return
+      }
+      for (const thread of threads) {
+        const row = document.createElement("button")
+        row.type = "button"
+        row.className = `thread${thread.id === this.threadId ? " active" : ""}`
+        row.innerHTML = `<span class="t">${escapeHtml(thread.title)}</span><span class="w">${escapeHtml(when(thread.updated_at))}</span>`
+        row.addEventListener("click", () => void this.openThread(thread.id))
+        this.el.threads.appendChild(row)
+      }
+    } catch (error) {
+      this.config.onError?.(error as Error)
+    }
+  }
+
+  private async startThread(): Promise<void> {
+    try {
+      const thread = await this.transport.newThread()
+      this.threadId = thread.id
+      this.messages = []
+      this.el.log.replaceChildren()
+      this.greet()
+      this.toggleDrawer(false)
+      void this.loadThreads()
+    } catch (error) {
+      this.showError(error as Error)
+    }
+  }
+
+  private async openThread(id: string): Promise<void> {
+    try {
+      const history = await this.transport.history(id)
+      this.threadId = id
+      this.messages = []
+      this.el.log.replaceChildren()
+      for (const stored of history) {
+        this.push({
+          id: stored.id,
+          role: stored.role,
+          text: stored.text,
+          charts: stored.charts,
+          citations: stored.citations,
+          followups: stored.followups,
+        })
+      }
+      if (!history.length) this.greet()
+      this.toggleDrawer(false)
+      this.scrollToEnd(true)
+    } catch (error) {
+      this.showError(error as Error)
+    }
+  }
+
+  /** The header's right-hand controls, rebuilt when capabilities change. */
+  private renderActions(): void {
+    const buttons: string[] = []
+    if (this.mode !== "page" && this.capabilities.maximize) {
+      buttons.push(
+        `<button class="icon act-max" type="button" aria-label="${this.maximized ? "Restore" : "Maximize"}" title="${this.maximized ? "Restore" : "Maximize"}">${this.maximized ? MINIMIZE : MAXIMIZE}</button>`,
+      )
+    }
+    if (this.mode !== "page" && this.capabilities.fullscreen) {
+      buttons.push(
+        `<button class="icon act-tab" type="button" aria-label="Open in a new tab" title="Open in a new tab">${EXTERNAL}</button>`,
+      )
+    }
+    this.el.actions.innerHTML = buttons.join("")
+    this.el.actions
+      .querySelector(".act-max")
+      ?.addEventListener("click", () => this.maximize())
+    this.el.actions
+      .querySelector(".act-tab")
+      ?.addEventListener("click", () => this.openFullscreen())
+
+    const menu = this.el.root.querySelector(".menu") as HTMLElement | null
+    menu?.classList.toggle("hidden", !this.capabilities.threads)
+  }
+
   // -------------------------------------------------------------- session
 
   private async startSession(): Promise<void> {
@@ -251,6 +431,10 @@ export class Widget {
     this.restyle()
 
     this.limit = remote.limits?.messagesPerSession ?? 0
+    this.capabilities = { ...NO_CAPABILITIES, ...(remote.capabilities ?? {}) }
+    this.renderActions()
+    if (this.behaviour.startMaximized && this.capabilities.maximize) this.maximize(true)
+    else if (read(maxKey(this.config.key)) === "1" && this.capabilities.maximize) this.maximize(true)
 
     if (remote.requiresSignedIdentity && this.config.user?.id && !this.config.user.hash) {
       // eslint-disable-next-line no-console
@@ -344,8 +528,16 @@ export class Widget {
           reply.activity = undefined
           this.repaint(reply)
           break
+        case "chart":
+          // Collected rather than drawn now: a chart mid-stream would be
+          // redrawn on every subsequent token, and `complete` carries the
+          // final set anyway.
+          reply.charts = [...(reply.charts ?? []), event.config]
+          break
         case "complete":
           reply.text = event.fullText || reply.text
+          reply.charts = (event.charts as unknown[]) ?? reply.charts
+          reply.citations = event.citations ?? []
           reply.followups = (event.followups ?? []).map((f) => f.question).slice(0, 3)
           break
         case "error":
@@ -392,14 +584,22 @@ export class Widget {
     wrap.innerHTML = `
       <div class="panel hidden" role="dialog" aria-modal="false" aria-label="Assistant">
         <div class="header">
+          <button class="icon menu hidden" type="button" aria-label="Conversations" aria-expanded="false">${MENU}</button>
           <img class="avatar hidden" alt="" />
           <div class="titles">
             <div class="title"></div>
             <div class="subtitle hidden"></div>
           </div>
-          <button class="close" type="button" aria-label="Close">${CLOSE}</button>
+          <div class="actions"></div>
+          <button class="icon close" type="button" aria-label="Close">${CLOSE}</button>
         </div>
-        <div class="log" role="log" aria-live="polite" aria-relevant="additions text"></div>
+        <div class="body">
+          <div class="drawer hidden">
+            <button class="newthread" type="button">${PLUS}<span>New conversation</span></button>
+            <div class="threads"></div>
+          </div>
+          <div class="log" role="log" aria-live="polite" aria-relevant="additions text"></div>
+        </div>
         <div class="composer">
           <div class="field">
             <textarea rows="1" aria-label="Your question"></textarea>
@@ -417,6 +617,7 @@ export class Widget {
     const q = <T extends Element>(selector: string) => wrap.querySelector(selector) as T
     this.el = {
       style,
+      root: wrap,
       launcher: q<HTMLButtonElement>(".launcher"),
       panel: q<HTMLDivElement>(".panel"),
       log: q<HTMLDivElement>(".log"),
@@ -427,10 +628,15 @@ export class Widget {
       avatar: q<HTMLImageElement>(".avatar"),
       live: q<HTMLDivElement>(".sr"),
       foot: q<HTMLDivElement>(".foot"),
+      actions: q<HTMLDivElement>(".actions"),
+      drawer: q<HTMLDivElement>(".drawer"),
+      threads: q<HTMLDivElement>(".threads"),
     }
 
     this.el.launcher.addEventListener("click", () => this.toggle())
     q<HTMLButtonElement>(".close").addEventListener("click", () => this.hide())
+    q<HTMLButtonElement>(".menu").addEventListener("click", () => this.toggleDrawer())
+    q<HTMLButtonElement>(".newthread").addEventListener("click", () => void this.startThread())
     this.el.send.addEventListener("click", () => this.send(this.el.input.value))
 
     this.el.input.addEventListener("input", () => {
@@ -587,6 +793,8 @@ export class Widget {
     bubble.innerHTML =
       render(message.text) +
       (message.pending ? '<span class="caret"></span>' : "") +
+      (message.pending ? "" : this.charts(message)) +
+      (message.pending ? "" : this.citations(message)) +
       (message.activity
         ? `<div class="activity"><span class="dots"><i></i><i></i><i></i></span>${escapeHtml(message.activity)}</div>`
         : "")
@@ -597,6 +805,43 @@ export class Widget {
       const existing = row.nextElementSibling
       if (!existing?.classList.contains("chips")) this.renderChips(message.followups)
     }
+  }
+
+
+  /** Charts, drawn once the answer has stopped moving. */
+  private charts(message: ChatMessage): string {
+    if (!this.capabilities.charts || !message.charts?.length) return ""
+    return (message.charts as ChartConfig[])
+      .map((config) => renderChart(config))
+      .join("")
+  }
+
+  /**
+   * What the answer was based on.
+   *
+   * Its intent and how many rows it read — enough to judge whether the answer
+   * is about the right thing, which is the entire job of a citation. The SQL,
+   * the spec and the table names stay behind: they describe the shape of
+   * somebody's database to a person who only asked a question about it, and
+   * the server does not send them here in the first place.
+   */
+  private citations(message: ChatMessage): string {
+    if (!this.capabilities.citations || !message.citations?.length) return ""
+    const rows = message.citations
+      .filter((c) => c.intent)
+      .map(
+        (c) =>
+          `<li>${escapeHtml(String(c.intent))}${
+            typeof c.row_count === "number"
+              ? ` <span class="rows">${c.row_count.toLocaleString()} rows</span>`
+              : ""
+          }</li>`,
+      )
+    if (!rows.length) return ""
+    return `<details class="cites">
+      <summary>Based on ${rows.length} ${rows.length === 1 ? "query" : "queries"}</summary>
+      <ul>${rows.join("")}</ul>
+    </details>`
   }
 
   private setBusy(busy: boolean): void {
@@ -657,6 +902,17 @@ function findScriptSrc(): string | null {
     if (tag.src.includes("askdb")) return tag.src
   }
   return null
+}
+
+/** "3 min ago" — a thread list wants recency, not a timestamp. */
+function when(iso: string): string {
+  const then = Date.parse(iso)
+  if (!Number.isFinite(then)) return ""
+  const seconds = Math.max(0, (Date.now() - then) / 1000)
+  if (seconds < 60) return "just now"
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`
+  return `${Math.floor(seconds / 86400)}d`
 }
 
 let counter = 0

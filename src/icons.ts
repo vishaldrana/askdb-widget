@@ -21,5 +21,10 @@ export const LAUNCHER_ICONS: Record<LauncherIcon, string> = {
 }
 
 export const CLOSE = svg('<path d="M18 6L6 18M6 6l12 12"/>', 18)
+export const MENU = svg('<path d="M3 6h18M3 12h18M3 18h18"/>', 18)
+export const PLUS = svg('<path d="M12 5v14M5 12h14"/>', 16)
+export const MAXIMIZE = svg('<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>', 16)
+export const MINIMIZE = svg('<path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/>', 16)
+export const EXTERNAL = svg('<path d="M15 3h6v6"/><path d="M10 14L21 3"/><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/>', 16)
 export const SEND = svg('<path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/>', 18)
 export const CHEVRON = svg('<path d="M6 9l6 6 6-6"/>', 18)
