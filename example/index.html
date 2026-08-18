@@ -56,17 +56,52 @@
       s.src = 'http://127.0.0.1:8000/embed.js?v=' + Date.now(); s.async = 1;
       d.head.appendChild(s);
     })(window, document);
+  </script>
 
-    // Replace with the publishable key from your embed's settings, and point
-    // `apiUrl` at your askdb host. `example/local.html` is gitignored — keep a
-    // copy with real values there rather than editing this one.
+  <!-- Optional, gitignored, and allowed to 404: local values for this demo. -->
+  <script src="./local-key.js" onerror="void 0"></script>
+
+  <script>
+    var d = document;
+
+    // The key committed here is a placeholder, because this file is public.
+    // `example/local-key.js` is gitignored and, if it exists, supplies the real
+    // one — so cloning the repo and opening this page locally just works
+    // without anybody's key ever reaching a commit.
+    var DEFAULT_KEY = 'pk_your_publishable_key';
+    var config = window.askdbDemo || {};
+    var key = config.key || DEFAULT_KEY;
+
     askdb('init', {
-      key: 'pk_your_publishable_key',
-      apiUrl: 'http://127.0.0.1:8000',
+      key: key,
+      apiUrl: config.apiUrl || 'http://127.0.0.1:8000',
+      user: config.user,
       onReady: function () { console.log('[demo] widget ready'); },
       onMessage: function (m) { console.log('[demo]', m.role + ':', m.text.slice(0, 60)); },
-      onError: function (e) { console.warn('[demo] error', e.message); }
+      onError: function (e) { console.warn('[demo] error', e.message); notice(e.message); }
     });
+
+    // A widget that cannot start removes itself rather than leaving a broken
+    // button on a customer's page, which is right for a customer's page and
+    // useless here: you are left staring at a demo with nothing on it and no
+    // idea why. On the demo, say so on the page.
+    function notice(message) {
+      if (d.getElementById('demo-notice')) return;
+      var el = d.createElement('div');
+      el.id = 'demo-notice';
+      el.style.cssText = 'position:fixed;left:16px;right:16px;bottom:16px;z-index:2147483000;' +
+        'max-width:520px;margin:0 auto;padding:12px 14px;border-radius:10px;' +
+        'background:#7f1d1d;color:#fff;font:13px/1.5 system-ui,sans-serif;' +
+        'box-shadow:0 8px 24px rgba(0,0,0,.3)';
+      el.innerHTML = '<strong>The widget did not start.</strong><br>' +
+        String(message).replace(/[<>]/g, '') +
+        (key === DEFAULT_KEY
+          ? '<br><br>This page is using the placeholder key. Put your own in ' +
+            '<code>example/local-key.js</code>:<br>' +
+            '<code>window.askdbDemo = { key: "pk_…", user: { id: "…", hash: "…" } }</code>'
+          : '');
+      d.body.appendChild(el);
+    }
   </script>
 </body>
 </html>

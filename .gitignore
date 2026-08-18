@@ -2,5 +2,6 @@ node_modules/
 dist/
 *.log
 
-# A copy of the demo with a real key in it.
+# Real values for the demo page: a whole copy, or just the key.
 example/local.html
+example/local-key.js
