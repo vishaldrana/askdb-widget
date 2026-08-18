@@ -306,7 +306,14 @@ button {
 
 /* ------------------------------------------------------- charts + cites */
 
-.chart { margin: 10px 0 4px; }
+/* Capped, and that is the whole point of the cap: the SVG scales to its
+   container, so in the maximized dialog or a full-screen tab an answer's
+   chart grew to fill the window — a pie the height of the viewport, above a
+   sentence explaining it. A chart here is read at a glance beside the text,
+   not studied, so it stops growing where it stops being legible-at-a-glance
+   and the column keeps its measure. */
+.chart { margin: 10px 0 4px; max-width: 400px; }
+.chart-pie { max-width: 220px; }
 .chart figcaption {
   font-size: 12px;
   font-weight: 600;

@@ -31,6 +31,17 @@ const W = 320
 const H = 180
 const PAD = { top: 8, right: 8, bottom: 26, left: 40 }
 
+/**
+ * A pie gets its own, square box.
+ *
+ * Drawn into the 320×180 plot like the others, the circle can only be as wide
+ * as the box is tall, so a third of the width on each side is empty — and
+ * because the SVG scales to its container, that empty space grows with it.
+ * A square box means the drawing is the chart, and the width cap below is
+ * about the circle rather than about the margins beside it.
+ */
+const PIE = 180
+
 /** Enough hues to tell series apart, few enough that none shouts. */
 const COLOURS = ["#3b82f6", "#f59e0b", "#10b981", "#a855f7", "#ef4444", "#14b8a6"]
 
@@ -43,9 +54,11 @@ export function renderChart(config: ChartConfig): string {
         ? lines(config)
         : bars(config)
 
-  return `<figure class="chart">
+  const box = config.type === "pie" ? `0 0 ${PIE} ${PIE}` : `0 0 ${W} ${H}`
+
+  return `<figure class="chart chart-${config.type}">
     ${config.title ? `<figcaption>${escape(String(config.title))}</figcaption>` : ""}
-    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${escape(label(config))}" preserveAspectRatio="xMidYMid meet">${body}</svg>
+    <svg viewBox="${box}" role="img" aria-label="${escape(label(config))}" preserveAspectRatio="xMidYMid meet">${body}</svg>
     ${legend(config)}
   </figure>`
 }
@@ -156,9 +169,9 @@ function pie(config: ChartConfig): string {
   const total = data.reduce((a, b) => a + b, 0)
   if (!total) return ""
 
-  const cx = W / 2
-  const cy = H / 2
-  const r = Math.min(plotH, plotW) / 2 - 4
+  const cx = PIE / 2
+  const cy = PIE / 2
+  const r = PIE / 2 - 4
 
   let angle = -Math.PI / 2
   return data
