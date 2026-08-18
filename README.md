@@ -214,8 +214,12 @@ answer can become markup, and links are restricted to `http(s)`.
 ```bash
 npm run build      # dist/askdb.js (script tag) + dist/index.js (package)
 npm run typecheck
-npx http-server example   # a deliberately hostile demo page
+python3 -m http.server 4173 --directory example
 ```
+
+`example/index.html` ships with a placeholder key. Copy it to
+`example/local.html`, put your own key and `apiUrl` in, and open that —
+`local.html` is gitignored so a real key never ends up in a commit.
 
 The example page ships a `content-box` reset and a magenta dashed `button`
 rule, because the point of the demo is to prove those do not reach the widget.

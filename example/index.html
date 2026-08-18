@@ -57,8 +57,11 @@
       d.head.appendChild(s);
     })(window, document);
 
+    // Replace with the publishable key from your embed's settings, and point
+    // `apiUrl` at your askdb host. `example/local.html` is gitignored — keep a
+    // copy with real values there rather than editing this one.
     askdb('init', {
-      key: 'pk_JzlSs1MhCt0JMy8akuiUgrL8pqX2_zqD',
+      key: 'pk_your_publishable_key',
       apiUrl: 'http://127.0.0.1:8000',
       onReady: function () { console.log('[demo] widget ready'); },
       onMessage: function (m) { console.log('[demo]', m.role + ':', m.text.slice(0, 60)); },
