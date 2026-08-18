@@ -16,7 +16,18 @@ import type { Appearance } from "./types"
  * template literal**, comments included. A backtick ends the literal, and the
  * error you get points at whatever happens to parse badly forty lines later.
  */
-export function stylesheet(look: Required<Appearance>): string {
+export function stylesheet(look: Required<Appearance>, scope = ":host"): string {
+  const sheet = sheetFor(look)
+  // The React package can render without a shadow root, for callers who want
+  // the assistant to inherit their own page rather than be walled off from it.
+  // Same rules, re-anchored: `:host(...)` becomes `.askdb(...)`, which is a
+  // valid compound selector on the wrapper element.
+  return scope === ":host"
+    ? sheet
+    : sheet.replace(/:host\(([^)]*)\)/g, `${scope}$1`).replace(/:host/g, scope)
+}
+
+function sheetFor(look: Required<Appearance>): string {
   return `
 :host {
   --accent: ${look.accent};
@@ -207,6 +218,36 @@ button {
   animation: none;
 }
 :host([data-mode="page"]) .launcher { display: none; }
+
+/* Inline mode: the assistant is a block in somebody's layout — a panel in a
+   dashboard, a tab in an admin screen. It fills whatever box it was given and
+   has no launcher, because the thing that opens it is the page.
+
+   Distinct from page mode, which is fixed to the viewport and owns it.
+   Inline owns nothing; if it took the viewport it would escape the container
+   it was placed in, which is the whole reason somebody chose this mode. */
+:host([data-mode="inline"]) .root {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  height: 100%;
+  align-items: stretch;
+  gap: 0;
+}
+:host([data-mode="inline"]) .panel {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  inset: auto;
+  box-shadow: none;
+  animation: none;
+}
+:host([data-mode="inline"]) .launcher { display: none; }
+:host([data-mode="inline"]) .drawer { position: static; width: 210px; }
+@media (max-width: 640px) {
+  :host([data-mode="inline"]) .drawer { position: absolute; inset: 0; width: 100%; }
+}
 
 .header {
   display: flex;
@@ -622,6 +663,16 @@ textarea:disabled { opacity: .6; cursor: not-allowed; }
 .send:disabled { opacity: .35; cursor: not-allowed; }
 .send:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .send svg { width: 18px; height: 18px; }
+
+/* Stop, while an answer is streaming. A square rather than an icon because it
+   replaces the send arrow in the same 18px box, and the two need to read as
+   one control changing state rather than two controls swapping places. */
+.send .stop {
+  display: block;
+  width: 12px; height: 12px;
+  border-radius: 3px;
+  background: currentColor;
+}
 
 .foot {
   display: flex; align-items: center; justify-content: space-between;

@@ -26,6 +26,26 @@ in askdb, and the page can override any of it.
 **`user` is required.** An embedded assistant only answers signed-in people —
 see [Identifying your visitors](#identifying-your-visitors).
 
+## Using React?
+
+Install [`@askdb/react`](./react) instead. A script tag is the right answer for
+a marketing site or anything where the person pasting it is not the person who
+wrote the app; inside a React application it is the wrong shape — a global
+`askdb('init', …)` has to be driven from an effect, it outlives the route that
+wanted it, and it cannot take a value from your own state without an imperative
+call to keep the two in step.
+
+```tsx
+import { AskDBWidget } from "@askdb/react"
+
+<AskDBWidget publicKey="pk_live_…" apiUrl="https://your-askdb-host" user={user} />
+```
+
+Both packages are built from this repository and share one engine — the
+session, the stream reducer, threads, the message cap and the citation model
+all live in `src/engine.ts`. Only the rendering differs, which is the only part
+that should.
+
 ---
 
 ## What the key does, and does not, grant

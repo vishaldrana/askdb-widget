@@ -1,5 +1,7 @@
-import { Transport, WidgetError } from "./api"
+import { WidgetError } from "./api"
 import { renderChart, type ChartConfig } from "./chart"
+import { formatMs, when } from "./defaults"
+import { ChatEngine, type EngineState } from "./engine"
 import {
   CLOSE,
   EXTERNAL,
@@ -12,28 +14,28 @@ import {
 } from "./icons"
 import { escapeHtml, render } from "./markdown"
 import { stylesheet } from "./styles"
-import type {
-  Appearance,
-  Behaviour,
-  Capabilities,
-  ChatMessage,
-  RemoteConfig,
-  WidgetConfig,
-} from "./types"
+import type { Appearance, Capabilities, ChatMessage, ThreadSummary, WidgetConfig } from "./types"
 
 /**
- * The widget.
+ * The widget: a view over `ChatEngine`, and nothing else.
  *
- * Rendered into a shadow root attached to a `<div>` appended to `<body>`, for
- * one reason: the host page's CSS must not reach it and its CSS must not reach
- * the host page. Every site has a `* { box-sizing }` rule and a `button`
- * reset, and inheriting either is how an embedded widget ends up looking
- * broken in a way its author cannot reproduce.
+ * It is rendered into a shadow root attached to a `<div>` appended to
+ * `<body>`, for one reason: the host page's CSS must not reach it and its CSS
+ * must not reach the host page. Every site has a `* { box-sizing }` rule and a
+ * `button` reset, and inheriting either is how an embedded widget ends up
+ * looking broken in a way its author cannot reproduce.
+ *
+ * Everything that is not drawing — the session, the stream, threads, the
+ * message cap — lives in the engine, which the React package uses too. This
+ * class used to own all of it, and keeping that arrangement would have meant
+ * two copies of the SSE reducer and the stale-token retry, fixed twice
+ * forever.
  *
  * The DOM is built once and mutated afterwards. Re-rendering the message list
  * on every token would lose the visitor's text selection and reset the scroll
  * position mid-answer, which are the two things people actually do while an
- * answer is arriving.
+ * answer is arriving — so `sync` diffs the engine's state against what is on
+ * screen and touches only what changed.
  */
 
 // Per key, for the same reason the session token is: two embeds on one origin
@@ -41,68 +43,39 @@ import type {
 const openKey = (key: string) => `askdb.open.${key}`
 const maxKey = (key: string) => `askdb.max.${key}`
 
-const DEFAULTS: Required<Appearance> = {
-  title: "Assistant",
-  subtitle: "",
-  greeting: "",
-  accent: "#111827",
-  accentForeground: "#ffffff",
-  position: "right",
-  offset: 20,
-  radius: 16,
-  launcherLabel: "",
-  launcherIcon: "chat",
-  avatarUrl: "",
-  placeholder: "Ask a question…",
-  suggestions: [],
-  theme: "system",
-  disclaimer: "",
-  showBranding: true,
-  zIndex: 2147483000,
-}
-
-const DEFAULT_BEHAVIOUR: Required<Behaviour> = {
-  autoOpen: false,
-  openDelay: 0,
-  rememberState: true,
-  focusOnOpen: true,
-  hideLauncher: false,
-  startMaximized: false,
-}
-
-/** Everything off until the server says otherwise — a capability the widget
- *  invents is a button whose endpoint refuses it. */
-const NO_CAPABILITIES: Capabilities = {
-  threads: false,
-  charts: false,
-  citations: false,
-  maximize: false,
-  fullscreen: false,
-}
-
 export class Widget {
   private host: HTMLDivElement
   private root: ShadowRoot
-  private transport: Transport
+  private engine: ChatEngine
   private config: WidgetConfig
-  private look: Required<Appearance> = DEFAULTS
-  private behaviour: Required<Behaviour> = DEFAULT_BEHAVIOUR
+
+  /** The last state the engine reported. Read by every render path. */
+  private state: EngineState
 
   private open = false
-  private busy = false
-  private messages: ChatMessage[] = []
-  private abort: AbortController | null = null
   private destroyed = false
   private themeQuery: MediaQueryList | null = null
-  private capabilities: Capabilities = NO_CAPABILITIES
   private maximized = false
-  private threadId: string | null = null
   private drawerOpen = false
   /** Suppresses auto-scroll while the visitor is reading further up. */
   private pinned = true
-  /** How many questions this session may ask, from the server. */
-  private limit = 0
-  private asked = 0
+
+  /**
+   * What is on screen, by message id, with a signature of what was drawn.
+   *
+   * The engine mutates a streaming message in place and bumps the array's
+   * identity, so "has this changed" cannot be an identity check. The signature
+   * is every field the bubble reads; comparing it is one string compare per
+   * message per token, which is nothing beside the paint it avoids.
+   */
+  private rendered = new Map<string, { row: HTMLElement; signature: string }>()
+  private chips: HTMLDivElement | null = null
+
+  /** Previous values, so a repaint only happens when its input moved. */
+  private paintedLook: Required<Appearance> | null = null
+  private paintedCapabilities: Capabilities | null = null
+  private paintedThreads: ThreadSummary[] | null = null
+  private paintedBusy: boolean | null = null
 
   private el!: {
     style: HTMLStyleElement
@@ -129,7 +102,13 @@ export class Widget {
     this.config = config
     this.mode = config.mode === "page" ? "page" : "bubble"
     this.baseUrl = baseUrl(config.apiUrl)
-    this.transport = new Transport(this.baseUrl, config.key)
+
+    this.engine = new ChatEngine({
+      config,
+      baseUrl: this.baseUrl,
+      onChange: (state) => this.sync(state),
+    })
+    this.state = this.engine.current()
 
     this.host = document.createElement("div")
     this.host.setAttribute("data-askdb-widget", "")
@@ -150,24 +129,25 @@ export class Widget {
   // ------------------------------------------------------------ lifecycle
 
   private async boot(): Promise<void> {
-    try {
-      // Config first, and rendered before any session is created: a visitor
-      // who never opens the widget should cost nothing but one cached GET.
-      const remote = await this.transport.config()
-      this.applyRemote(remote)
-      this.config.onReady?.()
+    // Config first, and rendered before any session is created: a visitor who
+    // never opens the widget should cost nothing but one cached GET.
+    await this.engine.start()
+    if (this.destroyed) return
 
-      // Page mode *is* the widget: there is no launcher to press and nothing
-      // else on the page to go back to.
-      if (this.mode === "page") this.show()
-      else if (this.behaviour.rememberState && read(openKey(this.config.key)) === "1") this.show()
-      else if (this.behaviour.autoOpen) {
-        window.setTimeout(() => this.show(), this.behaviour.openDelay)
-      }
-    } catch (error) {
+    if (this.state.status === "failed") {
       // A misconfigured key must not leave a broken button on somebody's
       // marketing page. Remove ourselves and tell the developer why.
-      this.fail(error as Error)
+      this.fail(this.state.error ?? new Error("could not start"))
+      return
+    }
+
+    // Page mode *is* the widget: there is no launcher to press and nothing
+    // else on the page to go back to.
+    if (this.mode === "page") this.show()
+    else if (this.state.behaviour.rememberState && read(openKey(this.config.key)) === "1") {
+      this.show()
+    } else if (this.state.behaviour.autoOpen) {
+      window.setTimeout(() => this.show(), this.state.behaviour.openDelay)
     }
   }
 
@@ -182,7 +162,7 @@ export class Widget {
   destroy(): void {
     if (this.destroyed) return
     this.destroyed = true
-    this.abort?.abort()
+    this.engine.destroy()
     this.themeQuery?.removeEventListener("change", this.onSystemTheme)
     document.removeEventListener("keydown", this.onKeydown, true)
     this.host.remove()
@@ -205,12 +185,12 @@ export class Widget {
     // Only now. A visitor who never opens the widget never gets a session,
     // which keeps the rate limit meaningful and the logs honest about how many
     // people actually talked to it.
-    if (!this.transport.hasSession()) void this.startSession()
-    if (!this.messages.length) this.greet()
+    void this.engine.openSession()
+    this.engine.greet()
 
     // Focus is deliberately skipped on small screens: taking it summons the
     // on-screen keyboard over the greeting the visitor came to read.
-    if (this.behaviour.focusOnOpen && window.innerWidth > 480) {
+    if (this.state.behaviour.focusOnOpen && window.innerWidth > 480) {
       window.setTimeout(() => this.el.input.focus(), 60)
     }
     this.scrollToEnd(true)
@@ -224,7 +204,7 @@ export class Widget {
     write(openKey(this.config.key), "0")
     this.config.onClose?.()
     // Answering into a closed widget wastes the visitor's data and our tokens.
-    this.abort?.abort()
+    this.engine.stop()
     this.el.launcher.focus()
   }
 
@@ -233,40 +213,19 @@ export class Widget {
   }
 
   reset(): void {
-    this.abort?.abort()
-    this.transport.forget()
-    this.messages = []
-    this.asked = 0
-    this.el.log.replaceChildren()
-    this.busy = false
-    this.setBusy(false)
+    this.engine.reset()
     if (this.open) {
-      void this.startSession()
-      this.greet()
+      void this.engine.openSession()
+      this.engine.greet()
     }
   }
 
   update(patch: Partial<WidgetConfig>): void {
     this.config = { ...this.config, ...patch }
-    if (patch.appearance) {
-      this.look = { ...this.look, ...clean(patch.appearance) }
-      this.restyle()
-    }
-    if (patch.behaviour || patch.behavior) {
-      this.behaviour = {
-        ...this.behaviour,
-        ...clean(patch.behaviour ?? {}),
-        ...clean(patch.behavior ?? {}),
-      }
-      this.el.launcher.classList.toggle("hidden", this.behaviour.hideLauncher)
-    }
-    // A changed identity is a different person: keeping the conversation would
-    // show one customer the answers given to another.
-    if (patch.user && patch.user.id !== this.config.user?.id) this.reset()
+    this.engine.update(patch)
   }
 
-
-  // ------------------------------------------------------------ size
+  // ------------------------------------------------------------------ size
 
   /**
    * The 80% dialog.
@@ -278,7 +237,7 @@ export class Widget {
    * way" and "I am reading this now" — nobody wants to negotiate pixels.
    */
   maximize(on = !this.maximized): void {
-    if (!this.capabilities.maximize || this.mode === "page") return
+    if (!this.state.capabilities.maximize || this.mode === "page") return
     this.maximized = on
     this.el.root.classList.toggle("maximized", on)
     write(maxKey(this.config.key), on ? "1" : "0")
@@ -309,142 +268,65 @@ export class Widget {
   // --------------------------------------------------------- conversations
 
   private toggleDrawer(open = !this.drawerOpen): void {
-    if (!this.capabilities.threads) return
+    if (!this.state.capabilities.threads) return
     this.drawerOpen = open
     this.el.drawer.classList.toggle("hidden", !open)
     this.el.root.querySelector(".menu")?.setAttribute("aria-expanded", String(open))
-    if (open) void this.loadThreads()
-  }
-
-  private async loadThreads(): Promise<void> {
-    try {
-      const threads = await this.transport.threads()
-      this.el.threads.replaceChildren()
-      if (!threads.length) {
-        const empty = document.createElement("p")
-        empty.className = "empty"
-        empty.textContent = "No past conversations yet."
-        this.el.threads.appendChild(empty)
-        return
-      }
-      for (const thread of threads) {
-        const row = document.createElement("button")
-        row.type = "button"
-        row.className = `thread${thread.id === this.threadId ? " active" : ""}`
-        row.innerHTML = `<span class="t">${escapeHtml(thread.title)}</span><span class="w">${escapeHtml(when(thread.updated_at))}</span>`
-        row.addEventListener("click", () => void this.openThread(thread.id))
-        this.el.threads.appendChild(row)
-      }
-    } catch (error) {
-      this.config.onError?.(error as Error)
+    if (open) {
+      this.paintThreads(this.state.threads)
+      void this.engine.loadThreads()
     }
   }
 
-  private async startThread(): Promise<void> {
-    try {
-      const thread = await this.transport.newThread()
-      this.threadId = thread.id
-      this.messages = []
-      this.el.log.replaceChildren()
-      this.greet()
-      this.toggleDrawer(false)
-      void this.loadThreads()
-    } catch (error) {
-      this.showError(error as Error)
+  private paintThreads(threads: ThreadSummary[]): void {
+    this.el.threads.replaceChildren()
+    if (!threads.length) {
+      const empty = document.createElement("p")
+      empty.className = "empty"
+      empty.textContent = "No past conversations yet."
+      this.el.threads.appendChild(empty)
+      return
     }
-  }
-
-  private async openThread(id: string): Promise<void> {
-    try {
-      const history = await this.transport.history(id)
-      this.threadId = id
-      this.messages = []
-      this.el.log.replaceChildren()
-      for (const stored of history) {
-        this.push({
-          id: stored.id,
-          role: stored.role,
-          text: stored.text,
-          charts: stored.charts,
-          citations: stored.citations,
-          followups: stored.followups,
-          steps: stored.steps,
-          elapsedMs: stored.elapsed_ms,
-        })
-      }
-      if (!history.length) this.greet()
-      this.toggleDrawer(false)
-      this.scrollToEnd(true)
-    } catch (error) {
-      this.showError(error as Error)
+    for (const thread of threads) {
+      const row = document.createElement("button")
+      row.type = "button"
+      row.className = `thread${thread.id === this.state.threadId ? " active" : ""}`
+      row.innerHTML =
+        `<span class="t">${escapeHtml(thread.title)}</span>` +
+        `<span class="w">${escapeHtml(when(thread.updated_at))}</span>`
+      row.addEventListener("click", () => {
+        void this.engine.openThread(thread.id)
+        this.toggleDrawer(false)
+      })
+      this.el.threads.appendChild(row)
     }
   }
 
   /** The header's right-hand controls, rebuilt when capabilities change. */
   private renderActions(): void {
+    const capabilities = this.state.capabilities
     const buttons: string[] = []
-    if (this.mode !== "page" && this.capabilities.maximize) {
+    if (this.mode !== "page" && capabilities.maximize) {
+      const label = this.maximized ? "Restore" : "Maximize"
       buttons.push(
-        `<button class="icon act-max" type="button" aria-label="${this.maximized ? "Restore" : "Maximize"}" title="${this.maximized ? "Restore" : "Maximize"}">${this.maximized ? MINIMIZE : MAXIMIZE}</button>`,
+        `<button class="icon act-max" type="button" aria-label="${label}" title="${label}">${
+          this.maximized ? MINIMIZE : MAXIMIZE
+        }</button>`,
       )
     }
-    if (this.mode !== "page" && this.capabilities.fullscreen) {
+    if (this.mode !== "page" && capabilities.fullscreen) {
       buttons.push(
         `<button class="icon act-tab" type="button" aria-label="Open in a new tab" title="Open in a new tab">${EXTERNAL}</button>`,
       )
     }
     this.el.actions.innerHTML = buttons.join("")
-    this.el.actions
-      .querySelector(".act-max")
-      ?.addEventListener("click", () => this.maximize())
+    this.el.actions.querySelector(".act-max")?.addEventListener("click", () => this.maximize())
     this.el.actions
       .querySelector(".act-tab")
       ?.addEventListener("click", () => this.openFullscreen())
 
     const menu = this.el.root.querySelector(".menu") as HTMLElement | null
-    menu?.classList.toggle("hidden", !this.capabilities.threads)
-  }
-
-  // -------------------------------------------------------------- session
-
-  private async startSession(): Promise<void> {
-    try {
-      const remote = await this.transport.session(this.config.user)
-      this.applyRemote(remote)
-    } catch (error) {
-      this.showError(error as Error)
-    }
-  }
-
-  private applyRemote(remote: RemoteConfig): void {
-    // Server first, page second. The embed's owner sets the greeting and the
-    // suggestions; whoever owns the page sets where it sits so it does not
-    // cover their cookie banner. Neither can silently win the other's field.
-    this.look = {
-      ...DEFAULTS,
-      ...clean(remote.appearance as Partial<Appearance>),
-      ...clean(this.config.appearance ?? {}),
-    }
-    this.behaviour = {
-      ...DEFAULT_BEHAVIOUR,
-      ...clean(this.config.behaviour ?? {}),
-      ...clean(this.config.behavior ?? {}),
-    }
-    this.restyle()
-
-    this.limit = remote.limits?.messagesPerSession ?? 0
-    this.capabilities = { ...NO_CAPABILITIES, ...(remote.capabilities ?? {}) }
-    this.renderActions()
-    if (this.behaviour.startMaximized && this.capabilities.maximize) this.maximize(true)
-    else if (read(maxKey(this.config.key)) === "1" && this.capabilities.maximize) this.maximize(true)
-
-    if (remote.requiresSignedIdentity && this.config.user?.id && !this.config.user.hash) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "[askdb] this assistant requires a signed user id — compute " +
-          "HMAC_SHA256(secret, user.id) on your server and pass it as user.hash",
-      )
-    }
+    menu?.classList.toggle("hidden", !capabilities.threads)
   }
 
   // --------------------------------------------------------------- sending
@@ -453,152 +335,137 @@ export class Widget {
     const question = text.trim()
     if (!question || this.destroyed) return
     if (!this.open) this.show()
-    if (this.busy) return
-    void this.ask(question)
-  }
-
-  private async ask(question: string): Promise<void> {
-    // Checked here rather than at the server's refusal, so the visitor is told
-    // before they type the next one rather than after.
-    if (this.limit && this.asked >= this.limit) {
-      this.push({
-        id: id(),
-        role: "assistant",
-        text: "This conversation has reached its limit. Reload the page to start a new one.",
-        failed: true,
-      })
-      return
-    }
-    this.asked += 1
-    this.setBusy(true)
     this.el.input.value = ""
     this.autosize()
-
-    this.push({ id: id(), role: "user", text: question })
-    this.config.onMessage?.({ role: "user", text: question })
-
-    const reply: ChatMessage = { id: id(), role: "assistant", text: "", pending: true }
-    this.push(reply)
-
-    this.abort = new AbortController()
-    try {
-      if (!this.transport.hasSession()) await this.transport.session(this.config.user)
-      await this.consume(question, reply)
-    } catch (error) {
-      const err = error as WidgetError
-      if (err?.kind === "aborted") {
-        // The visitor closed the widget or asked something else. Drop the
-        // half-written answer rather than leaving a truncated one on screen.
-        this.remove(reply)
-      } else if (err?.status === 403 && this.transport.hasSession()) {
-        // A stale token from a previous visit. Start a new session once and
-        // retry — silently, because "your session expired" means nothing to
-        // somebody who has been on the page for ten seconds.
-        this.transport.forget()
-        try {
-          await this.transport.session(this.config.user)
-          await this.consume(question, reply)
-        } catch (retry) {
-          this.failMessage(reply, retry as Error)
-        }
-      } else {
-        this.failMessage(reply, err)
-      }
-    } finally {
-      this.abort = null
-      this.setBusy(false)
-    }
-  }
-
-  private async consume(question: string, reply: ChatMessage): Promise<void> {
-    const signal = this.abort!.signal
-    for await (const event of this.transport.ask(question, signal)) {
-      switch (event.type) {
-        case "token":
-          reply.text += event.text
-          reply.activity = undefined
-          this.repaint(reply)
-          break
-        case "tool_start":
-          // The label is written server-side for a reader — "Counting orders",
-          // not "run_query". Shown because a five-second silence with nothing
-          // on screen reads as broken.
-          reply.activity = event.label
-          // Kept as well as shown, so the finished answer can say what it did
-          // rather than only that it was busy at the time.
-          reply.steps = [
-            ...(reply.steps ?? []),
-            { name: event.name, label: event.label, status: "running" },
-          ]
-          this.repaint(reply)
-          break
-        case "tool_end": {
-          reply.activity = undefined
-          const steps = [...(reply.steps ?? [])]
-          // The last running step of this name: a turn can call the same tool
-          // twice, and matching on name alone closes the wrong one.
-          for (let i = steps.length - 1; i >= 0; i--) {
-            const step = steps[i]
-            if (step && step.name === event.name && step.status === "running") {
-              steps[i] = { ...step, status: event.status, duration_ms: event.duration_ms }
-              break
-            }
-          }
-          reply.steps = steps
-          this.repaint(reply)
-          break
-        }
-        case "chart":
-          // Collected rather than drawn now: a chart mid-stream would be
-          // redrawn on every subsequent token, and `complete` carries the
-          // final set anyway.
-          reply.charts = [...(reply.charts ?? []), event.config]
-          break
-        case "complete":
-          reply.text = event.fullText || reply.text
-          reply.charts = (event.charts as unknown[]) ?? reply.charts
-          reply.citations = event.citations ?? []
-          reply.steps = event.steps ?? reply.steps
-          reply.followups = (event.followups ?? []).map((f) => f.question).slice(0, 3)
-          break
-        case "timing":
-          reply.elapsedMs = event.elapsed_ms
-          break
-        case "error":
-          reply.failed = true
-          reply.text = event.message
-          break
-        case "done":
-          break
-      }
-    }
-    reply.pending = false
-    reply.activity = undefined
-    this.repaint(reply)
-    if (!reply.failed) this.config.onMessage?.({ role: "assistant", text: reply.text })
-  }
-
-  private failMessage(message: ChatMessage, error: Error): void {
-    message.pending = false
-    message.failed = true
-    message.text =
-      error instanceof WidgetError
-        ? error.message
-        : "Something went wrong. Please try again."
-    this.repaint(message)
-    this.config.onError?.(error)
-  }
-
-  private showError(error: Error): void {
-    this.push({
-      id: id(),
-      role: "assistant",
-      text: error instanceof WidgetError ? error.message : "Something went wrong.",
-      failed: true,
-    })
+    void this.engine.send(question)
   }
 
   // ---------------------------------------------------------------- render
+
+  /**
+   * Bring the DOM into line with the engine's state.
+   *
+   * Every branch is guarded by "did this actually change", because this runs
+   * once per streamed token and most of it has not.
+   */
+  private sync(state: EngineState): void {
+    if (this.destroyed) return
+    this.state = state
+
+    if (state.status === "failed" && state.error) {
+      this.fail(state.error)
+      return
+    }
+
+    if (state.look !== this.paintedLook) {
+      this.paintedLook = state.look
+      this.restyle()
+    }
+
+    if (state.capabilities !== this.paintedCapabilities) {
+      const first = this.paintedCapabilities === null
+      this.paintedCapabilities = state.capabilities
+      this.renderActions()
+      if (first && state.capabilities.maximize) {
+        if (state.behaviour.startMaximized || read(maxKey(this.config.key)) === "1") {
+          this.maximize(true)
+        }
+      }
+    }
+
+    if (state.threads !== this.paintedThreads) {
+      this.paintedThreads = state.threads
+      if (this.drawerOpen) this.paintThreads(state.threads)
+    }
+
+    if (state.busy !== this.paintedBusy) {
+      this.paintedBusy = state.busy
+      this.setBusy(state.busy)
+    }
+
+    this.syncMessages(state.messages)
+  }
+
+  private syncMessages(messages: ChatMessage[]): void {
+    const seen = new Set<string>()
+    let moved = false
+
+    for (const message of messages) {
+      seen.add(message.id)
+      const signature = signatureOf(message)
+      const existing = this.rendered.get(message.id)
+
+      if (!existing) {
+        const row = document.createElement("div")
+        row.className = `msg ${message.role}`
+        row.dataset["id"] = message.id
+        row.innerHTML = `<div class="bubble"></div>`
+        this.el.log.appendChild(row)
+        this.paint(message, row)
+        this.rendered.set(message.id, { row, signature })
+        moved = true
+      } else if (existing.signature !== signature) {
+        this.paint(message, existing.row)
+        existing.signature = signature
+        moved = true
+      }
+    }
+
+    // Opening a past conversation replaces the whole transcript, so anything
+    // left over belongs to the one before it.
+    for (const [id, entry] of this.rendered) {
+      if (!seen.has(id)) {
+        entry.row.remove()
+        this.rendered.delete(id)
+        moved = true
+      }
+    }
+
+    this.renderChips(messages)
+    if (moved) this.scrollToEnd()
+  }
+
+  /**
+   * The one row of buttons under the conversation.
+   *
+   * Followups belong to the finished answer at the end of the transcript, and
+   * the greeting's suggestions stand in until there is one. Both are the same
+   * element, rebuilt — an earlier version appended a fresh row after each
+   * answer, which left a trail of stale suggestions up the transcript.
+   */
+  private renderChips(messages: ChatMessage[]): void {
+    const last = messages[messages.length - 1]
+    const followups = last && !last.pending && !last.failed ? (last.followups ?? []) : []
+    const opening = messages.length <= 1 && !this.state.busy ? this.state.look.suggestions : []
+    const questions = followups.length ? followups : opening
+
+    if (!questions.length) {
+      this.chips?.remove()
+      this.chips = null
+      return
+    }
+    if (this.chips && this.chips.dataset["for"] === questions.join(" ")) {
+      // Already showing exactly these. Rebuilding would restart the fade and
+      // steal the click of anyone reaching for one.
+      this.el.log.appendChild(this.chips)
+      return
+    }
+
+    const chips = document.createElement("div")
+    chips.className = "chips"
+    chips.dataset["for"] = questions.join(" ")
+    for (const question of questions) {
+      const chip = document.createElement("button")
+      chip.type = "button"
+      chip.className = "chip"
+      chip.textContent = question
+      chip.addEventListener("click", () => this.send(question))
+      chips.appendChild(chip)
+    }
+    this.chips?.remove()
+    this.chips = chips
+    this.el.log.appendChild(chips)
+  }
 
   private build(): void {
     const style = document.createElement("style")
@@ -660,12 +527,18 @@ export class Widget {
     this.el.launcher.addEventListener("click", () => this.toggle())
     q<HTMLButtonElement>(".close").addEventListener("click", () => this.hide())
     q<HTMLButtonElement>(".menu").addEventListener("click", () => this.toggleDrawer())
-    q<HTMLButtonElement>(".newthread").addEventListener("click", () => void this.startThread())
-    this.el.send.addEventListener("click", () => this.send(this.el.input.value))
+    q<HTMLButtonElement>(".newthread").addEventListener("click", () => {
+      void this.engine.newThread()
+      this.toggleDrawer(false)
+    })
+    this.el.send.addEventListener("click", () => {
+      if (this.state.busy) this.engine.stop()
+      else this.send(this.el.input.value)
+    })
 
     this.el.input.addEventListener("input", () => {
       this.autosize()
-      this.el.send.disabled = this.busy || !this.el.input.value.trim()
+      this.el.send.disabled = this.state.busy ? false : !this.el.input.value.trim()
     })
     this.el.input.addEventListener("keydown", (event) => {
       // Enter sends, Shift+Enter breaks the line. IME composition is excluded
@@ -684,6 +557,7 @@ export class Widget {
     })
 
     document.addEventListener("keydown", this.onKeydown, true)
+    this.restyle()
   }
 
   private onKeydown = (event: KeyboardEvent): void => {
@@ -696,34 +570,32 @@ export class Widget {
   private onSystemTheme = (): void => this.applyTheme()
 
   private restyle(): void {
-    this.el.style.textContent = stylesheet(this.look)
+    const look = this.state.look
+    this.el.style.textContent = stylesheet(look)
     this.applyTheme()
 
-    this.el.title.textContent = this.look.title
-    this.el.subtitle.textContent = this.look.subtitle
-    this.el.subtitle.classList.toggle("hidden", !this.look.subtitle)
-    this.el.panel.setAttribute("aria-label", this.look.title)
+    this.el.title.textContent = look.title || this.state.name
+    this.el.subtitle.textContent = look.subtitle
+    this.el.subtitle.classList.toggle("hidden", !look.subtitle)
+    this.el.panel.setAttribute("aria-label", look.title)
 
-    if (this.look.avatarUrl) {
-      this.el.avatar.src = this.look.avatarUrl
+    if (look.avatarUrl) {
+      this.el.avatar.src = look.avatarUrl
       this.el.avatar.classList.remove("hidden")
     } else {
       this.el.avatar.classList.add("hidden")
     }
 
-    this.el.input.placeholder = this.look.placeholder
+    this.el.input.placeholder = look.placeholder
     this.el.launcher.innerHTML =
-      LAUNCHER_ICONS[this.look.launcherIcon] +
-      (this.look.launcherLabel ? `<span>${escapeHtml(this.look.launcherLabel)}</span>` : "")
-    this.el.launcher.setAttribute(
-      "aria-label",
-      this.look.launcherLabel || `Open ${this.look.title}`,
-    )
-    this.el.launcher.classList.toggle("hidden", this.behaviour.hideLauncher)
+      LAUNCHER_ICONS[look.launcherIcon] +
+      (look.launcherLabel ? `<span>${escapeHtml(look.launcherLabel)}</span>` : "")
+    this.el.launcher.setAttribute("aria-label", look.launcherLabel || `Open ${look.title}`)
+    this.el.launcher.classList.toggle("hidden", this.state.behaviour.hideLauncher)
 
     const parts: string[] = []
-    if (this.look.disclaimer) parts.push(`<span>${escapeHtml(this.look.disclaimer)}</span>`)
-    if (this.look.showBranding) {
+    if (look.disclaimer) parts.push(`<span>${escapeHtml(look.disclaimer)}</span>`)
+    if (look.showBranding) {
       parts.push(
         '<a href="https://askdb.dev" target="_blank" rel="noopener noreferrer">Powered by askdb</a>',
       )
@@ -733,67 +605,21 @@ export class Widget {
   }
 
   private applyTheme(): void {
+    const preference = this.state.look.theme
     const wanted =
-      this.look.theme === "system"
+      preference === "system"
         ? window.matchMedia?.("(prefers-color-scheme: dark)").matches
           ? "dark"
           : "light"
-        : this.look.theme
+        : preference
 
     this.host.setAttribute("data-theme", wanted)
     // The attribute is on the host because `:host([data-theme])` is the only
     // selector that can style across the boundary from outside.
-    if (this.look.theme === "system" && !this.themeQuery && window.matchMedia) {
+    if (preference === "system" && !this.themeQuery && window.matchMedia) {
       this.themeQuery = window.matchMedia("(prefers-color-scheme: dark)")
       this.themeQuery.addEventListener("change", this.onSystemTheme)
     }
-  }
-
-  private greet(): void {
-    if (this.look.greeting) {
-      this.push({ id: id(), role: "assistant", text: this.look.greeting })
-    }
-    if (this.look.suggestions.length) this.renderChips(this.look.suggestions)
-  }
-
-  private renderChips(questions: string[]): void {
-    const chips = document.createElement("div")
-    chips.className = "chips"
-    for (const question of questions) {
-      const chip = document.createElement("button")
-      chip.type = "button"
-      chip.className = "chip"
-      chip.textContent = question
-      chip.addEventListener("click", () => {
-        chips.remove()
-        this.send(question)
-      })
-      chips.appendChild(chip)
-    }
-    this.el.log.appendChild(chips)
-    this.scrollToEnd()
-  }
-
-  private push(message: ChatMessage): void {
-    this.messages.push(message)
-    const row = document.createElement("div")
-    row.className = `msg ${message.role}`
-    row.dataset["id"] = message.id
-    row.innerHTML = `<div class="bubble"></div>`
-    this.el.log.appendChild(row)
-    this.paint(message, row)
-    this.scrollToEnd()
-  }
-
-  private repaint(message: ChatMessage): void {
-    const row = this.el.log.querySelector(`[data-id="${message.id}"]`)
-    if (row) this.paint(message, row as HTMLElement)
-    this.scrollToEnd()
-  }
-
-  private remove(message: ChatMessage): void {
-    this.messages = this.messages.filter((m) => m !== message)
-    this.el.log.querySelector(`[data-id="${message.id}"]`)?.remove()
   }
 
   private paint(message: ChatMessage, row: HTMLElement): void {
@@ -808,9 +634,7 @@ export class Widget {
     }
 
     if (!message.text && message.pending) {
-      bubble.innerHTML = `<div class="activity"><span class="dots"><i></i><i></i><i></i></span>${
-        message.activity ? escapeHtml(message.activity) : "Thinking"
-      }</div>`
+      bubble.innerHTML = activityRow(message.activity ?? "Thinking")
       return
     }
 
@@ -820,38 +644,21 @@ export class Widget {
       (message.pending ? '<span class="caret"></span>' : "") +
       (message.pending ? "" : this.charts(message)) +
       (message.pending ? "" : this.citations(message)) +
-      (message.activity
-        ? `<div class="activity"><span class="dots"><i></i><i></i><i></i></span>${escapeHtml(message.activity)}</div>`
-        : "")
-
-    if (!message.pending && message.followups?.length) {
-      // Rendered after the answer, once, so they do not flicker in and out
-      // while tokens are still arriving.
-      const existing = row.nextElementSibling
-      if (!existing?.classList.contains("chips")) this.renderChips(message.followups)
-    }
+      (message.activity ? activityRow(message.activity) : "")
   }
-
 
   /** Charts, drawn once the answer has stopped moving. */
   private charts(message: ChatMessage): string {
-    if (!this.capabilities.charts || !message.charts?.length) return ""
-    return (message.charts as ChartConfig[])
-      .map((config) => renderChart(config))
-      .join("")
+    if (!this.state.capabilities.charts || !message.charts?.length) return ""
+    return (message.charts as ChartConfig[]).map((config) => renderChart(config)).join("")
   }
 
   /**
    * What it did to get here, above the answer.
    *
-   * The main product has had this since the beginning and the widget had
-   * nothing — a spinner while it worked, and then an answer with no account of
-   * where it came from. That asymmetry was never a decision about what an
-   * embedded reader should see; it was a thing left undone.
-   *
    * Collapsed, because a correct answer needs no defence. Expanded it is the
-   * same list of steps with the same timings, minus the SQL, which stays
-   * gated by role here as it is everywhere else.
+   * same list of steps with the same timings, minus the SQL, which stays gated
+   * by role here as it is everywhere else.
    */
   private trace(message: ChatMessage): string {
     const steps = message.steps ?? []
@@ -862,9 +669,7 @@ export class Widget {
       : message.elapsedMs === undefined
         ? "Processed"
         : `Processed in ${formatMs(message.elapsedMs)}`
-    const count = steps.length
-      ? ` · ${steps.length} step${steps.length === 1 ? "" : "s"}`
-      : ""
+    const count = steps.length ? ` · ${steps.length} step${steps.length === 1 ? "" : "s"}` : ""
 
     const rows = steps
       .map(
@@ -904,7 +709,7 @@ export class Widget {
    * kind of disclosure, and it is gated by role on the main site too.
    */
   private citations(message: ChatMessage): string {
-    if (!this.capabilities.citations || !message.citations?.length) return ""
+    if (!this.state.capabilities.citations || !message.citations?.length) return ""
     const cites = message.citations.filter((c) => c.intent || c.detail)
     if (!cites.length) return ""
 
@@ -981,9 +786,12 @@ export class Widget {
   }
 
   private setBusy(busy: boolean): void {
-    this.busy = busy
     this.el.input.disabled = busy
-    this.el.send.disabled = busy || !this.el.input.value.trim()
+    // While an answer is streaming the button stops it rather than going grey:
+    // an answer that has gone wrong is one a visitor should be able to end.
+    this.el.send.innerHTML = busy ? '<span class="stop"></span>' : SEND
+    this.el.send.setAttribute("aria-label", busy ? "Stop" : "Send")
+    this.el.send.disabled = busy ? false : !this.el.input.value.trim()
     this.el.live.textContent = busy ? "Answering" : ""
   }
 
@@ -1004,13 +812,24 @@ export class Widget {
 
 // ------------------------------------------------------------------ utils
 
-/** Strip `undefined` so a partial override never blanks a resolved default. */
-function clean<T extends object>(source: T): Partial<T> {
-  const out: Partial<T> = {}
-  for (const [key, value] of Object.entries(source)) {
-    if (value !== undefined && value !== null) (out as Record<string, unknown>)[key] = value
-  }
-  return out
+/** Everything the bubble reads, so "has this changed" is one comparison. */
+function signatureOf(message: ChatMessage): string {
+  return [
+    message.text,
+    message.pending ? "1" : "",
+    message.failed ? "1" : "",
+    message.activity ?? "",
+    message.steps?.map((s) => `${s.name}:${s.status}:${s.duration_ms ?? ""}`).join(",") ?? "",
+    message.charts?.length ?? 0,
+    message.citations?.length ?? 0,
+    message.elapsedMs ?? "",
+  ].join(" ")
+}
+
+function activityRow(label: string): string {
+  return `<div class="activity"><span class="dots"><i></i><i></i><i></i></span>${escapeHtml(
+    label,
+  )}</div>`
 }
 
 function baseUrl(configured?: string): string {
@@ -1040,23 +859,6 @@ function findScriptSrc(): string | null {
   return null
 }
 
-/** "3 min ago" — a thread list wants recency, not a timestamp. */
-function when(iso: string): string {
-  const then = Date.parse(iso)
-  if (!Number.isFinite(then)) return ""
-  const seconds = Math.max(0, (Date.now() - then) / 1000)
-  if (seconds < 60) return "just now"
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`
-  return `${Math.floor(seconds / 86400)}d`
-}
-
-let counter = 0
-function id(): string {
-  counter += 1
-  return `m${counter}`
-}
-
 function read(key: string): string | null {
   try {
     return window.sessionStorage.getItem(key)
@@ -1071,12 +873,4 @@ function write(key: string, value: string): void {
   } catch {
     /* a widget that cannot remember still works */
   }
-}
-
-/** A duration a person can read at a glance. Matches the main product's. */
-function formatMs(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)} ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`
-  const mins = Math.floor(ms / 60_000)
-  return `${mins}m ${Math.round((ms % 60_000) / 1000)}s`
 }

@@ -15,16 +15,26 @@
     },
     "./askdb.js": "./dist/askdb.js"
   },
-  "files": ["dist", "README.md"],
-  "sideEffects": ["./dist/askdb.js"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": [
+    "./dist/askdb.js"
+  ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && npm run build --workspace @askdb/react",
+    "build:widget": "tsup",
+    "build:react": "npm run build --workspace @askdb/react",
     "dev": "tsup --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace @askdb/react",
     "size": "gzip -c dist/askdb.js | wc -c"
   },
   "devDependencies": {
     "tsup": "^8.3.5",
     "typescript": "^5.7.2"
-  }
+  },
+  "workspaces": [
+    "react"
+  ]
 }

@@ -5,3 +5,8 @@ dist/
 # Real values for the demo page: a whole copy, or just the key.
 example/local.html
 example/local-key.js
+
+# The React example's own credentials, same rule as the widget demo's:
+# local.example.ts is the template, local.ts is the one with a real key and a
+# real identity hash in it.
+react/example/src/local.ts
