@@ -323,6 +323,39 @@ button {
 .chart .grid { stroke: var(--line); stroke-width: 1; }
 .chart .tick { fill: var(--muted); font-size: 9px; }
 .chart .value { fill: var(--fg); font-size: 9px; font-weight: 600; }
+/* Labels drawn inside a filled block: white on the fill, and never wider than
+   the block that holds them. */
+.chart .inbox { fill: #fff; font-size: 9px; font-weight: 600; }
+.chart .inbox-value { fill: #fff; font-size: 9px; opacity: .85; }
+
+.chart-kpi .kpi-value {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.chart-kpi .kpi-label { margin-top: 2px; font-size: 11px; color: var(--muted); }
+
+.chart-heatmap table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 2px;
+  font-size: 10px;
+}
+.chart-heatmap th {
+  font-weight: 400;
+  color: var(--muted);
+  text-align: right;
+  padding-right: 4px;
+  white-space: nowrap;
+}
+.chart-heatmap thead th { text-align: center; padding: 0 2px 2px; }
+.chart-heatmap td {
+  text-align: center;
+  padding: 3px 4px;
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+}
 /* Slices separated by the colour behind them, so touching slices of
    similar hue still read as two. */
 .chart .slice { stroke: var(--surface); stroke-width: 1; }

@@ -20,11 +20,25 @@ export interface ChartSeries {
 }
 
 export interface ChartConfig {
-  type: "bar" | "line" | "pie" | "area" | "scatter"
+  /** Kept in step with the backend's `ChartSpec.type`. */
+  type:
+    | "bar"
+    | "hbar"
+    | "line"
+    | "area"
+    | "pie"
+    | "donut"
+    | "treemap"
+    | "scatter"
+    | "heatmap"
+    | "funnel"
+    | "kpi"
+    | "combo"
   title?: string | null
   categories: Array<string | number | null>
   series: ChartSeries[]
   stacked?: boolean
+  right_axis?: string[]
 }
 
 const W = 320
@@ -47,14 +61,31 @@ const COLOURS = ["#3b82f6", "#f59e0b", "#10b981", "#a855f7", "#ef4444", "#14b8a6
 
 export function renderChart(config: ChartConfig): string {
   if (!config?.series?.length || !config.categories?.length) return ""
-  const body =
-    config.type === "pie"
-      ? pie(config)
-      : config.type === "line" || config.type === "area" || config.type === "scatter"
-        ? lines(config)
-        : bars(config)
+  // Two of these are not drawings at all — a number and a grid — so they leave
+  // through a different door rather than being squeezed into an SVG with axes
+  // they do not have.
+  if (config.type === "kpi") return kpi(config)
+  if (config.type === "heatmap") return heatmap(config)
 
-  const box = config.type === "pie" ? `0 0 ${PIE} ${PIE}` : `0 0 ${W} ${H}`
+  const body =
+    config.type === "pie" || config.type === "donut"
+      ? pie(config)
+      : config.type === "treemap"
+        ? treemap(config)
+        : config.type === "funnel"
+          ? funnel(config)
+          : config.type === "hbar"
+            ? hbars(config)
+            : config.type === "line" || config.type === "area" || config.type === "scatter"
+              ? lines(config)
+              : bars(config)
+
+  const box =
+    config.type === "pie" || config.type === "donut"
+      ? `0 0 ${PIE} ${PIE}`
+      : config.type === "treemap" || config.type === "funnel" || config.type === "hbar"
+        ? `0 0 ${W} ${tallH(config)}`
+        : `0 0 ${W} ${H}`
 
   return `<figure class="chart chart-${config.type}">
     ${config.title ? `<figcaption>${escape(String(config.title))}</figcaption>` : ""}
@@ -281,7 +312,7 @@ function legend(config: ChartConfig): string {
   // legend shows the figures — colour, name, value, share — because "which of
   // these is 8%" is not a question anybody should answer by eye, and there are
   // no tooltips here to ask.
-  if (config.type === "pie") {
+  if (config.type === "pie" || config.type === "donut") {
     const data = (config.series[0]?.data ?? []).map((v) => (isNumber(v) ? Math.max(v, 0) : 0))
     const total = data.reduce((a, b) => a + b, 0)
     if (!total) return ""
@@ -300,6 +331,7 @@ function legend(config: ChartConfig): string {
     return `<div class="legend keyed">${rows.join("")}</div>`
   }
 
+  if (config.type === "treemap" || config.type === "funnel") return ""
   const names = config.series.length > 1 ? config.series.map((s) => s.name) : []
   if (!names.length) return ""
   return `<div class="legend">${names
@@ -359,4 +391,168 @@ function escape(text: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
+}
+
+// ------------------------------------------------------ the wider repertoire
+
+/**
+ * How tall a chart needs to be when its rows are horizontal.
+ *
+ * Horizontal bars, treemaps and funnels all grow downward with the number of
+ * categories rather than sideways, so a fixed 180 either squashes twenty rows
+ * into nothing or leaves a third of the box empty for three.
+ */
+function tallH(config: ChartConfig): number {
+  const rows = config.categories.length
+  if (config.type === "hbar") return Math.max(90, PAD.top + rows * 22 + 10)
+  if (config.type === "funnel") return Math.max(90, rows * 34 + 8)
+  return Math.max(140, Math.min(280, 60 + rows * 12))
+}
+
+/** Bars on their side: room for the names, and reads like the text beside it. */
+function hbars(config: ChartConfig): string {
+  const height = tallH(config)
+  const rows = config.categories.length
+  const slot = (height - PAD.top - 6) / Math.max(1, rows)
+  const values = config.series[0]?.data ?? []
+  const max = Math.max(...values.map((v) => (isNumber(v) ? v : 0)), 0)
+  // Labels live inside the plot on the left, so the axis is the label column.
+  const left = Math.min(120, 8 + longest(config) * 5.2)
+  const width = W - left - 34
+
+  return config.categories
+    .map((name, i) => {
+      const value = values[i]
+      if (!isNumber(value)) return ""
+      const y = PAD.top + i * slot
+      const bar = max > 0 ? Math.max(1, (value / max) * width) : 1
+      return (
+        `<text x="${round(left - 6)}" y="${round(y + slot / 2 + 3)}" class="tick" text-anchor="end">${escape(short(String(name ?? ""), 22))}</text>` +
+        `<rect x="${round(left)}" y="${round(y + slot * 0.18)}" width="${round(bar)}" height="${round(slot * 0.64)}" fill="${colour(0)}" rx="2"/>` +
+        `<text x="${round(left + bar + 4)}" y="${round(y + slot / 2 + 3)}" class="value">${compact(value)}</text>`
+      )
+    })
+    .join("")
+}
+
+/**
+ * Parts of a whole when there are too many for a circle.
+ *
+ * A squarified treemap would be better and is a great deal more code; this
+ * lays rows of proportional width, which is honest about area and stays
+ * readable to about thirty categories.
+ */
+function treemap(config: ChartConfig): string {
+  const height = tallH(config)
+  const values = (config.series[0]?.data ?? []).map((v) => (isNumber(v) ? Math.max(v, 0) : 0))
+  const total = values.reduce((a, b) => a + b, 0)
+  if (!total) return ""
+
+  // Rows of roughly equal height, filled left to right until each is full.
+  const perRow = Math.ceil(Math.sqrt(values.length))
+  const rows = Math.ceil(values.length / perRow)
+  const rowH = height / rows
+  let out = ""
+
+  for (let r = 0; r < rows; r++) {
+    const slice = values.slice(r * perRow, (r + 1) * perRow)
+    const sum = slice.reduce((a, b) => a + b, 0) || 1
+    let x = 0
+    slice.forEach((value, i) => {
+      const index = r * perRow + i
+      const width = (value / sum) * W
+      const name = String(config.categories[index] ?? "")
+      out +=
+        `<rect x="${round(x)}" y="${round(r * rowH)}" width="${round(Math.max(0, width - 1))}" height="${round(rowH - 1)}" fill="${colour(index)}" rx="2"/>` +
+        // Only labelled where the label fits. A name clipped to two letters is
+        // noise that makes the block look broken.
+        (width > 46
+          ? `<text x="${round(x + 5)}" y="${round(r * rowH + 14)}" class="inbox">${escape(short(name, Math.floor(width / 6)))}</text>` +
+            `<text x="${round(x + 5)}" y="${round(r * rowH + 27)}" class="inbox-value">${compact(value)}</text>`
+          : "")
+      x += width
+    })
+  }
+  return out
+}
+
+/** Ordered stages that shrink. The drop between rungs is the point. */
+function funnel(config: ChartConfig): string {
+  const values = (config.series[0]?.data ?? []).map((v) => (isNumber(v) ? Math.max(v, 0) : 0))
+  const top = values[0] || Math.max(...values, 1)
+  const rowH = 34
+
+  return config.categories
+    .map((name, i) => {
+      const value = values[i] ?? 0
+      const width = top > 0 ? Math.max(2, (value / top) * W) : 2
+      const x = (W - width) / 2
+      const y = i * rowH
+      // The share of the first stage, which is the number people actually want
+      // from a funnel — "we lose 40% at underwriting".
+      const share = top > 0 ? `${Math.round((value / top) * 100)}%` : ""
+      return (
+        `<rect x="${round(x)}" y="${round(y)}" width="${round(width)}" height="${rowH - 8}" fill="${colour(i)}" rx="3"/>` +
+        `<text x="${round(W / 2)}" y="${round(y + 17)}" class="inbox" text-anchor="middle">${escape(short(String(name ?? ""), 24))} · ${compact(value)} · ${share}</text>`
+      )
+    })
+    .join("")
+}
+
+/** One number, at the size it deserves. */
+function kpi(config: ChartConfig): string {
+  const series = config.series[0]
+  const value = series?.data[0]
+  if (!isNumber(value)) return ""
+  return `<figure class="chart chart-kpi">
+    ${config.title ? `<figcaption>${escape(String(config.title))}</figcaption>` : ""}
+    <div class="kpi-value">${escape(value.toLocaleString())}</div>
+    <div class="kpi-label">${escape(series?.name ?? "")}${series?.unit ? ` · ${escape(series.unit)}` : ""}</div>
+  </figure>`
+}
+
+/**
+ * Two dimensions and one measure, as a grid of tinted cells.
+ *
+ * Categories arrive as "row | column" — the contract carries one category
+ * axis, so the pair travels joined and is split here.
+ */
+function heatmap(config: ChartConfig): string {
+  const cells = config.categories.map((category, i) => {
+    const [row = "", column = ""] = String(category ?? "").split("|").map((p) => p.trim())
+    return { row, column, value: config.series[0]?.data[i] ?? null }
+  })
+  const rows = [...new Set(cells.map((c) => c.row))]
+  const columns = [...new Set(cells.map((c) => c.column))]
+  const max = Math.max(...cells.map((c) => (isNumber(c.value) ? c.value : 0)), 0)
+
+  const head =
+    `<tr><th></th>${columns
+      .map((c) => `<th>${escape(short(c, 10))}</th>`)
+      .join("")}</tr>`
+  const body = rows
+    .map((row) => {
+      const tds = columns
+        .map((column) => {
+          const value = cells.find((c) => c.row === row && c.column === column)?.value ?? null
+          // Opacity of one hue rather than a colour scale: readable without a
+          // legend, and without asking anyone to separate red from green.
+          const weight = isNumber(value) && max > 0 ? value / max : 0
+          return `<td style="background:color-mix(in srgb, var(--accent) ${Math.round(
+            8 + weight * 82,
+          )}%, transparent)">${isNumber(value) ? compact(value) : "—"}</td>`
+        })
+        .join("")
+      return `<tr><th>${escape(short(row, 14))}</th>${tds}</tr>`
+    })
+    .join("")
+
+  return `<figure class="chart chart-heatmap">
+    ${config.title ? `<figcaption>${escape(String(config.title))}</figcaption>` : ""}
+    <table><thead>${head}</thead><tbody>${body}</tbody></table>
+  </figure>`
+}
+
+function longest(config: ChartConfig): number {
+  return Math.max(...config.categories.map((c) => String(c ?? "").length), 0)
 }
