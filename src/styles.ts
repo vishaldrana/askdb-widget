@@ -322,6 +322,38 @@ button {
 .chart svg { width: 100%; height: auto; display: block; overflow: visible; }
 .chart .grid { stroke: var(--line); stroke-width: 1; }
 .chart .tick { fill: var(--muted); font-size: 9px; }
+.chart .value { fill: var(--fg); font-size: 9px; font-weight: 600; }
+/* Slices separated by the colour behind them, so touching slices of
+   similar hue still read as two. */
+.chart .slice { stroke: var(--surface); stroke-width: 1; }
+.chart .hole { fill: var(--surface); }
+.chart .total { fill: var(--fg); font-size: 20px; font-weight: 700; }
+.chart .total-label {
+  fill: var(--muted);
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+/* A pie's legend is a small table: swatch, name, value, share. Laid out in a
+   grid so the numbers line up in columns rather than wandering with the
+   length of each name. */
+.legend.keyed {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 2px 8px;
+  align-items: baseline;
+}
+.legend.keyed span { display: contents; }
+.legend.keyed b { font-weight: 400; color: var(--fg); }
+.legend.keyed em,
+.legend.keyed u {
+  font-style: normal;
+  text-decoration: none;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.legend.keyed em { color: var(--fg); font-weight: 600; }
 .legend {
   display: flex; flex-wrap: wrap; gap: 4px 10px;
   margin-top: 4px;
@@ -331,19 +363,75 @@ button {
 .legend span { display: inline-flex; align-items: center; gap: 4px; }
 .legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 
-.cites { margin-top: 8px; font-size: 12px; }
-.cites summary {
+/* The trace, above the answer, and the evidence, below it. Both collapsed:
+   a correct answer needs no defence, and both are one click from being the
+   most useful thing on screen when it is wrong. */
+.trace, .cites {
+  font-size: 12px;
+}
+.trace { margin: 0 0 6px; }
+.cites { margin-top: 8px; }
+.trace summary, .cites summary {
   cursor: pointer;
   color: var(--muted);
   list-style: none;
 }
-.cites summary::-webkit-details-marker { display: none; }
-.cites summary::before { content: "▸ "; }
-.cites[open] summary::before { content: "▾ "; }
-.cites summary:hover { color: var(--fg); }
-.cites ul { margin: 6px 0 0; padding-left: 16px; color: var(--muted); }
-.cites li { margin: 2px 0; }
-.cites .rows { opacity: .75; }
+.trace summary::-webkit-details-marker, .cites summary::-webkit-details-marker { display: none; }
+.trace summary::before, .cites summary::before { content: "▸  "; }
+.trace[open] summary::before, .cites[open] summary::before { content: "▾  "; }
+.trace summary:hover, .cites summary:hover { color: var(--fg); }
+
+.trace ol {
+  margin: 6px 0 0;
+  padding: 0 0 0 10px;
+  list-style: none;
+  border-left: 1px solid var(--line);
+  color: var(--muted);
+}
+.step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 3px 0;
+}
+.step .what { flex: 1; min-width: 0; }
+.step .took { flex: none; opacity: .7; font-variant-numeric: tabular-nums; }
+.step.error .what { color: var(--warn, #f59e0b); }
+
+.cites ul { margin: 6px 0 0; padding: 0; list-style: none; }
+.cites li {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.cites .head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.cites .head .what { font-weight: 600; }
+.cites .meta {
+  margin-top: 2px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.cites .facts { margin-top: 6px; color: var(--muted); }
+.cites .facts > div { margin: 2px 0; overflow-wrap: anywhere; }
+.cites .facts b { color: var(--fg); font-weight: 600; margin-right: 4px; }
+.cites .facts i { font-style: italic; }
+.tag {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.tag.ok { border-color: transparent; background: var(--accent); color: var(--accent-fg); }
 
 .log {
   flex: 1;

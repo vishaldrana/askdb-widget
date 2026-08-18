@@ -368,6 +368,8 @@ export class Widget {
           charts: stored.charts,
           citations: stored.citations,
           followups: stored.followups,
+          steps: stored.steps,
+          elapsedMs: stored.elapsed_ms,
         })
       }
       if (!history.length) this.greet()
@@ -522,12 +524,30 @@ export class Widget {
           // not "run_query". Shown because a five-second silence with nothing
           // on screen reads as broken.
           reply.activity = event.label
+          // Kept as well as shown, so the finished answer can say what it did
+          // rather than only that it was busy at the time.
+          reply.steps = [
+            ...(reply.steps ?? []),
+            { name: event.name, label: event.label, status: "running" },
+          ]
           this.repaint(reply)
           break
-        case "tool_end":
+        case "tool_end": {
           reply.activity = undefined
+          const steps = [...(reply.steps ?? [])]
+          // The last running step of this name: a turn can call the same tool
+          // twice, and matching on name alone closes the wrong one.
+          for (let i = steps.length - 1; i >= 0; i--) {
+            const step = steps[i]
+            if (step && step.name === event.name && step.status === "running") {
+              steps[i] = { ...step, status: event.status, duration_ms: event.duration_ms }
+              break
+            }
+          }
+          reply.steps = steps
           this.repaint(reply)
           break
+        }
         case "chart":
           // Collected rather than drawn now: a chart mid-stream would be
           // redrawn on every subsequent token, and `complete` carries the
@@ -538,7 +558,11 @@ export class Widget {
           reply.text = event.fullText || reply.text
           reply.charts = (event.charts as unknown[]) ?? reply.charts
           reply.citations = event.citations ?? []
+          reply.steps = event.steps ?? reply.steps
           reply.followups = (event.followups ?? []).map((f) => f.question).slice(0, 3)
+          break
+        case "timing":
+          reply.elapsedMs = event.elapsed_ms
           break
         case "error":
           reply.failed = true
@@ -791,6 +815,7 @@ export class Widget {
     }
 
     bubble.innerHTML =
+      this.trace(message) +
       render(message.text) +
       (message.pending ? '<span class="caret"></span>' : "") +
       (message.pending ? "" : this.charts(message)) +
@@ -817,27 +842,138 @@ export class Widget {
   }
 
   /**
+   * What it did to get here, above the answer.
+   *
+   * The main product has had this since the beginning and the widget had
+   * nothing — a spinner while it worked, and then an answer with no account of
+   * where it came from. That asymmetry was never a decision about what an
+   * embedded reader should see; it was a thing left undone.
+   *
+   * Collapsed, because a correct answer needs no defence. Expanded it is the
+   * same list of steps with the same timings, minus the SQL, which stays
+   * gated by role here as it is everywhere else.
+   */
+  private trace(message: ChatMessage): string {
+    const steps = message.steps ?? []
+    if (!steps.length && message.elapsedMs === undefined) return ""
+
+    const label = message.pending
+      ? "Working"
+      : message.elapsedMs === undefined
+        ? "Processed"
+        : `Processed in ${formatMs(message.elapsedMs)}`
+    const count = steps.length
+      ? ` · ${steps.length} step${steps.length === 1 ? "" : "s"}`
+      : ""
+
+    const rows = steps
+      .map(
+        (step) =>
+          `<li class="step ${step.status ?? ""}">
+            <span class="what">${escapeHtml(step.label || step.name || "")}</span>
+            ${
+              typeof step.duration_ms === "number" && step.duration_ms > 0
+                ? `<span class="took">${formatMs(step.duration_ms)}</span>`
+                : ""
+            }
+          </li>`,
+      )
+      .join("")
+
+    return `<details class="trace"${message.pending ? " open" : ""}>
+      <summary>${escapeHtml(label)}${count}</summary>
+      <ol>${rows}</ol>
+    </details>`
+  }
+
+  /**
    * What the answer was based on.
    *
-   * Its intent and how many rows it read — enough to judge whether the answer
-   * is about the right thing, which is the entire job of a citation. The SQL,
-   * the spec and the table names stay behind: they describe the shape of
-   * somebody's database to a person who only asked a question about it, and
-   * the server does not send them here in the first place.
+   * This used to be one line per query — its intent and a row count — on the
+   * reasoning that the shape of somebody's database is not a website visitor's
+   * business. That reasoning does not survive the embed requiring a signed
+   * identity: the reader is the site owner's own customer, asking about their
+   * own data, through a role that already decides what they may see. Leaving
+   * them a number with nothing behind it does not protect anybody; it just
+   * makes the answer unverifiable, which is the one thing a citation exists to
+   * prevent.
+   *
+   * So it now says what the query read, at what grain, filtered how, over what
+   * period, how long it took, and whether it was an approved template or
+   * written for this question. The SQL is still not here — that is a different
+   * kind of disclosure, and it is gated by role on the main site too.
    */
   private citations(message: ChatMessage): string {
     if (!this.capabilities.citations || !message.citations?.length) return ""
-    const rows = message.citations
-      .filter((c) => c.intent)
-      .map(
-        (c) =>
-          `<li>${escapeHtml(String(c.intent))}${
-            typeof c.row_count === "number"
-              ? ` <span class="rows">${c.row_count.toLocaleString()} rows</span>`
-              : ""
-          }</li>`,
-      )
-    if (!rows.length) return ""
+    const cites = message.citations.filter((c) => c.intent || c.detail)
+    if (!cites.length) return ""
+
+    const rows = cites.map((c) => {
+      const facts: string[] = []
+      const detail = c.detail
+
+      if (detail?.reads?.length) {
+        // Each read is a table plus how it was brought in — the base table, or
+        // a join and what it does to unmatched rows. That last part is the
+        // difference between a count of applications and a count of
+        // applications that happen to have a borrower row.
+        const reads = detail.reads.map((r) =>
+          r.role && r.role !== "base" ? `${r.table} (${r.role})` : r.table,
+        )
+        facts.push(`<b>Reads</b> ${escapeHtml(reads.join(", "))}`)
+      }
+      // The grain arrives as a whole sentence — "one row per status" — so the
+      // label is a heading for it rather than the first half of it. Prefixing
+      // "One row per" produced "One row per one row per status".
+      if (detail?.grain) facts.push(`<b>Grain</b> ${escapeHtml(detail.grain)}`)
+      if (detail?.measures?.length) {
+        facts.push(
+          `<b>Measures</b> ${escapeHtml(
+            detail.measures.map((m) => `${m.label} = ${m.of}`).join(", "),
+          )}`,
+        )
+      }
+      if (detail?.period) facts.push(`<b>Period</b> ${escapeHtml(detail.period)}`)
+      if (detail?.filters?.length) {
+        facts.push(`<b>Filtered</b> ${escapeHtml(detail.filters.join("; "))}`)
+      }
+      if (detail?.ordering?.length) {
+        facts.push(`<b>Ordered by</b> ${escapeHtml(detail.ordering.join(", "))}`)
+      }
+      if (typeof detail?.limit === "number") facts.push(`<b>Capped at</b> ${detail.limit} rows`)
+      if (c.columns?.length) facts.push(`<b>Returned</b> ${escapeHtml(c.columns.join(", "))}`)
+
+      // Kept last and labelled, because it is the model's account of its own
+      // work — the one line here that cannot be checked against the database.
+      if (c.reasoning) facts.push(`<b>Why</b> <i>${escapeHtml(c.reasoning)}</i>`)
+
+      const meta: string[] = []
+      if (typeof c.row_count === "number") {
+        meta.push(`${c.row_count.toLocaleString()} row${c.row_count === 1 ? "" : "s"}`)
+      }
+      if (c.truncated) meta.push("truncated")
+      if (typeof c.duration_ms === "number") meta.push(formatMs(c.duration_ms))
+
+      // "Approved template" versus "written for this question" is the most
+      // useful thing a citation says about how far to trust a number, and it
+      // was previously sent and then never shown.
+      const badge =
+        c.trust === "verified"
+          ? `<span class="tag ok">approved${
+              c.saved_query_name ? ` · ${escapeHtml(c.saved_query_name)}` : ""
+            }</span>`
+          : `<span class="tag">written for this question</span>`
+
+      return `<li>
+        <div class="head">
+          <span class="what">${escapeHtml(String(c.intent || "Query"))}</span>
+          ${badge}
+        </div>
+        ${meta.length ? `<div class="meta">${escapeHtml(meta.join(" · "))}</div>` : ""}
+        ${facts.length ? `<div class="facts">${facts.map((f) => `<div>${f}</div>`).join("")}</div>` : ""}
+      </li>`
+    })
+
     return `<details class="cites">
       <summary>Based on ${rows.length} ${rows.length === 1 ? "query" : "queries"}</summary>
       <ul>${rows.join("")}</ul>
@@ -935,4 +1071,12 @@ function write(key: string, value: string): void {
   } catch {
     /* a widget that cannot remember still works */
   }
+}
+
+/** A duration a person can read at a glance. Matches the main product's. */
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)} ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`
+  const mins = Math.floor(ms / 60_000)
+  return `${mins}m ${Math.round((ms % 60_000) / 1000)}s`
 }

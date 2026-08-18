@@ -1,4 +1,4 @@
-import type { Citation, Identity, RemoteConfig, StreamEvent, ThreadSummary } from "./types"
+import type { Citation, Identity, RemoteConfig, Step, StreamEvent, ThreadSummary } from "./types"
 
 /**
  * Talking to askdb from somebody else's page.
@@ -30,6 +30,8 @@ export interface StoredMessage {
   charts?: unknown[]
   citations?: Citation[]
   followups?: string[]
+  steps?: Step[]
+  elapsed_ms?: number
 }
 
 /**

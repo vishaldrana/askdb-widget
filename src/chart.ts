@@ -117,7 +117,23 @@ function bars(config: ChartConfig): string {
     })
     .join("")
 
-  return axes(config, b) + rects
+  // The value above each bar, when there is one series and few enough bars for
+  // the numbers not to collide. A bar chart without them makes you read a
+  // value off an axis by eye, and the reason to draw a chart next to a
+  // sentence is that the figures should be legible without doing that.
+  const labels =
+    config.series.length === 1 && groups <= 8
+      ? config.categories
+          .map((_, i) => {
+            const value = config.series[0]?.data[i]
+            if (!isNumber(value)) return ""
+            const top = y(Math.max(value, 0), b)
+            return `<text x="${round(PAD.left + i * slot + slot / 2)}" y="${round(top) - 4}" class="value" text-anchor="middle">${compact(value)}</text>`
+          })
+          .join("")
+      : ""
+
+  return axes(config, b) + rects + labels
 }
 
 // ------------------------------------------------- lines, areas, scatter
@@ -172,27 +188,65 @@ function pie(config: ChartConfig): string {
   const cx = PIE / 2
   const cy = PIE / 2
   const r = PIE / 2 - 4
+  // A ring rather than a disc, and the hole is not decoration: it is where the
+  // total goes. A pie of five slices used to say nothing but "one of these is
+  // most of it" — no values, no shares, no total — which is a picture of a
+  // number rather than the number.
+  const inner = r * 0.58
 
   let angle = -Math.PI / 2
-  return data
+  const slices = data
     .map((value, i) => {
       const sweep = (value / total) * Math.PI * 2
       const from = angle
       angle += sweep
       if (sweep <= 0) return ""
       // A slice at exactly 360° cannot be drawn as an arc — the start and end
-      // points coincide and the path collapses. One circle instead.
+      // points coincide and the path collapses. Two circles instead.
       if (sweep >= Math.PI * 2 - 1e-6) {
-        return `<circle cx="${cx}" cy="${cy}" r="${round(r)}" fill="${colour(i)}"/>`
+        return (
+          `<circle cx="${cx}" cy="${cy}" r="${round(r)}" fill="${colour(i)}"/>` +
+          `<circle cx="${cx}" cy="${cy}" r="${round(inner)}" class="hole"/>`
+        )
       }
-      const x1 = cx + r * Math.cos(from)
-      const y1 = cy + r * Math.sin(from)
-      const x2 = cx + r * Math.cos(angle)
-      const y2 = cy + r * Math.sin(angle)
-      const large = sweep > Math.PI ? 1 : 0
-      return `<path d="M ${cx} ${cy} L ${round(x1)} ${round(y1)} A ${round(r)} ${round(r)} 0 ${large} 1 ${round(x2)} ${round(y2)} Z" fill="${colour(i)}"/>`
+      return `<path d="${ring(cx, cy, r, inner, from, angle)}" fill="${colour(i)}" class="slice"/>`
     })
     .join("")
+
+  // The total, in the middle, at the size of a headline. It is the one figure
+  // every reader of a breakdown wants and the only one a pie cannot show.
+  const middle =
+    `<text x="${cx}" y="${cy - 1}" class="total" text-anchor="middle">${compact(total)}</text>` +
+    `<text x="${cx}" y="${cy + 13}" class="total-label" text-anchor="middle">total</text>`
+
+  return slices + middle
+}
+
+/** The path for one segment of a ring: outer arc out, inner arc back. */
+function ring(
+  cx: number,
+  cy: number,
+  outer: number,
+  inner: number,
+  from: number,
+  to: number,
+): string {
+  const large = to - from > Math.PI ? 1 : 0
+  const x1 = cx + outer * Math.cos(from)
+  const y1 = cy + outer * Math.sin(from)
+  const x2 = cx + outer * Math.cos(to)
+  const y2 = cy + outer * Math.sin(to)
+  const x3 = cx + inner * Math.cos(to)
+  const y3 = cy + inner * Math.sin(to)
+  const x4 = cx + inner * Math.cos(from)
+  const y4 = cy + inner * Math.sin(from)
+  return [
+    `M ${round(x1)} ${round(y1)}`,
+    `A ${round(outer)} ${round(outer)} 0 ${large} 1 ${round(x2)} ${round(y2)}`,
+    `L ${round(x3)} ${round(y3)}`,
+    `A ${round(inner)} ${round(inner)} 0 ${large} 0 ${round(x4)} ${round(y4)}`,
+    "Z",
+  ].join(" ")
 }
 
 // -------------------------------------------------------------------- axes
@@ -223,12 +277,30 @@ function axes(config: ChartConfig, b: { min: number; max: number }): string {
 }
 
 function legend(config: ChartConfig): string {
-  const names =
-    config.type === "pie"
-      ? config.categories.map((c) => String(c ?? ""))
-      : config.series.length > 1
-        ? config.series.map((s) => s.name)
-        : []
+  // A pie's legend carries the numbers. The slices show the shape and the
+  // legend shows the figures — colour, name, value, share — because "which of
+  // these is 8%" is not a question anybody should answer by eye, and there are
+  // no tooltips here to ask.
+  if (config.type === "pie") {
+    const data = (config.series[0]?.data ?? []).map((v) => (isNumber(v) ? Math.max(v, 0) : 0))
+    const total = data.reduce((a, b) => a + b, 0)
+    if (!total) return ""
+    const rows = config.categories
+      .map((name, i) => ({ name: String(name ?? ""), value: data[i] ?? 0, index: i }))
+      // Largest first: a legend in the data's arbitrary order makes you read
+      // all of it to find the big one.
+      .sort((a, b) => b.value - a.value)
+      .map(
+        (row) =>
+          `<span><i style="background:${colour(row.index)}"></i>` +
+          `<b>${escape(short(row.name, 22))}</b>` +
+          `<em>${compact(row.value)}</em>` +
+          `<u>${share(row.value, total)}</u></span>`,
+      )
+    return `<div class="legend keyed">${rows.join("")}</div>`
+  }
+
+  const names = config.series.length > 1 ? config.series.map((s) => s.name) : []
   if (!names.length) return ""
   return `<div class="legend">${names
     .map(
@@ -236,6 +308,14 @@ function legend(config: ChartConfig): string {
         `<span><i style="background:${colour(i)}"></i>${escape(short(name, 18))}</span>`,
     )
     .join("")}</div>`
+}
+
+/** `18.5%`, and never `0%` for something that is actually there. */
+function share(value: number, total: number): string {
+  if (!total) return ""
+  const pct = (value / total) * 100
+  if (pct > 0 && pct < 0.1) return "<0.1%"
+  return `${pct >= 10 ? Math.round(pct) : pct.toFixed(1)}%`
 }
 
 // ------------------------------------------------------------------- utils

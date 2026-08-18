@@ -198,11 +198,48 @@ export interface WidgetApi {
 // --------------------------------------------------------------- the wire
 
 /** What an answer was based on, as much of it as a visitor is told. */
+/** One table the query read, and how it was brought in. */
+export interface CitationRead {
+  table: string
+  /** `base`, `joined`, or the join type with what it does to unmatched rows. */
+  role?: string
+  on?: string[]
+  note?: string | null
+}
+
+/** What the executed query actually did, in plain English. */
+export interface CitationDetail {
+  reads?: CitationRead[]
+  grain?: string | null
+  measures?: Array<{ label: string; of: string }>
+  filters?: string[]
+  ordering?: string[]
+  limit?: number | null
+  period?: string | null
+}
+
 export interface Citation {
   index?: number
   intent?: string
   row_count?: number
+  /** `verified` — an approved template ran. `generated` — written for this question. */
   trust?: string
+  tool?: string
+  saved_query_name?: string | null
+  duration_ms?: number
+  truncated?: boolean
+  columns?: string[]
+  detail?: CitationDetail | null
+  /** The model's own account of why this query answers the question. */
+  reasoning?: string | null
+}
+
+/** One thing the assistant did on the way to the answer. */
+export interface Step {
+  name?: string
+  label?: string
+  status?: "ok" | "error" | "running"
+  duration_ms?: number
 }
 
 export type StreamEvent =
@@ -216,7 +253,10 @@ export type StreamEvent =
       charts?: unknown[]
       followups?: Array<{ question: string }>
       citations?: Citation[]
+      steps?: Step[]
     }
+  /** Wall clock for the whole turn, sent after `complete`. */
+  | { type: "timing"; elapsed_ms: number }
   | { type: "error"; message: string }
   | { type: "done" }
 
@@ -226,6 +266,9 @@ export interface ChatMessage {
   text: string
   charts?: unknown[]
   citations?: Citation[]
+  steps?: Step[]
+  /** How long the turn took end to end, server-measured. */
+  elapsedMs?: number
   /** Still streaming. Drives the caret and disables the composer. */
   pending?: boolean
   failed?: boolean
