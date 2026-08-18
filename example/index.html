@@ -58,9 +58,6 @@
     })(window, document);
   </script>
 
-  <!-- Optional, gitignored, and allowed to 404: local values for this demo. -->
-  <script src="./local-key.js" onerror="void 0"></script>
-
   <script>
     var d = document;
 
@@ -69,17 +66,32 @@
     // one — so cloning the repo and opening this page locally just works
     // without anybody's key ever reaching a commit.
     var DEFAULT_KEY = 'pk_your_publishable_key';
-    var config = window.askdbDemo || {};
-    var key = config.key || DEFAULT_KEY;
+    var key = DEFAULT_KEY;
 
-    askdb('init', {
-      key: key,
-      apiUrl: config.apiUrl || 'http://127.0.0.1:8000',
-      user: config.user,
-      onReady: function () { console.log('[demo] widget ready'); },
-      onMessage: function (m) { console.log('[demo]', m.role + ':', m.text.slice(0, 60)); },
-      onError: function (e) { console.warn('[demo] error', e.message); notice(e.message); }
-    });
+    // Loaded here rather than as a plain <script src> tag, for two reasons.
+    // The cache-buster: a browser that once saw this file 404 will keep saying
+    // so, and "I added the key file and the page still says there is no key"
+    // is a bad half hour. And `start` runs from both handlers, so the order is
+    // the load order, not the parse order — the file is genuinely optional.
+    var loader = d.createElement('script');
+    loader.src = './local-key.js?v=' + Date.now();
+    loader.onload = start;
+    loader.onerror = start;
+    d.head.appendChild(loader);
+
+    function start() {
+      var config = window.askdbDemo || {};
+      key = config.key || DEFAULT_KEY;
+
+      askdb('init', {
+        key: key,
+        apiUrl: config.apiUrl || 'http://127.0.0.1:8000',
+        user: config.user,
+        onReady: function () { console.log('[demo] widget ready'); },
+        onMessage: function (m) { console.log('[demo]', m.role + ':', m.text.slice(0, 60)); },
+        onError: function (e) { console.warn('[demo] error', e.message); notice(e.message); }
+      });
+    }
 
     // A widget that cannot start removes itself rather than leaving a broken
     // button on a customer's page, which is right for a customer's page and
